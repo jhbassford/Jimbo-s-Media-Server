@@ -6,24 +6,53 @@ A self-hosted media server stack that runs on any always-on computer — a NAS, 
 
 ## What Does This Actually Do?
 
-This sets up a collection of apps that work together:
+This sets up a collection of apps that work together. **Everything is optional** — use only what you need. Some apps depend on others, so those are noted below.
 
-| App | What it does |
-|---|---|
-| **Plex** | Streams your movies and TV shows to any device (like Netflix) |
-| **Radarr** | Automatically finds and downloads movies |
-| **Sonarr** | Automatically finds and downloads TV shows |
-| **Bazarr** | Automatically downloads subtitles for everything |
-| **SABnzbd** | The actual downloader (works with Radarr/Sonarr behind the scenes) |
-| **Overseerr** | A nice interface to request new movies/shows |
-| **Tautulli** | Shows you stats about who's watching what on Plex |
-| **Traefik** | The traffic controller — routes web requests to the right app securely |
-| **Portainer** | A visual dashboard to manage all your containers |
-| **Dozzle** | View live logs from all your containers in one place |
-| **Pi-hole** | Blocks ads across your entire home network |
-| **Cloudflared** | Lets you access everything securely from outside your home, without opening firewall ports |
-| **Redbot** | A Discord bot |
-| **Watchtower** | Automatically keeps all your apps up to date |
+### Core Infrastructure
+
+These underpin everything else. You can skip them, but you'll lose features like secure remote access and automatic HTTPS.
+
+| App | What it does | Optional? |
+|---|---|---|
+| **Traefik** | The traffic controller — routes web requests to the right app and handles SSL (the padlock) | Yes — without it, you access services by IP:port only, with no HTTPS |
+| **Socket Proxy** | Protects Docker from direct exposure — required by Traefik, Portainer, Dozzle, and Watchtower | Only if you're running any of those four |
+| **Cloudflared** | Creates a secure tunnel so you can reach your server from anywhere without opening router ports | Yes — only needed for remote access outside your home |
+
+### Media
+
+| App | What it does | Optional? | Requires |
+|---|---|---|---|
+| **Plex** | Streams your movies and TV shows to any device — like your own personal Netflix | Yes | — |
+| **Tautulli** | Shows stats on what's being watched, by who, and when | Yes | Plex |
+
+### Download Automation
+
+These work as a team. Radarr and Sonarr find content; SABnzbd actually downloads it. You need at least one of Radarr/Sonarr paired with SABnzbd for any of them to be useful.
+
+| App | What it does | Optional? | Requires |
+|---|---|---|---|
+| **Radarr** | Monitors for movies and sends them to your downloader automatically | Yes | SABnzbd |
+| **Sonarr** | Same as Radarr, but for TV shows | Yes | SABnzbd |
+| **SABnzbd** | The actual downloader — fetches content from Usenet | Yes, but needed by Radarr/Sonarr | A Usenet provider |
+| **Bazarr** | Automatically downloads subtitles for your media | Yes | Radarr and/or Sonarr |
+| **Overseerr** | A friendly interface to browse and request new movies/shows | Yes | Radarr and/or Sonarr |
+
+### Management & Utilities
+
+| App | What it does | Optional? | Requires |
+|---|---|---|---|
+| **Portainer** | A visual web UI to manage all your Docker containers | Yes | Socket Proxy |
+| **Dozzle** | View live logs from all containers in one place | Yes | Socket Proxy |
+| **Watchtower** | Automatically updates all your containers to the latest version | Yes | Socket Proxy |
+| **Pi-hole** | Blocks ads across your entire home network at the DNS level | Yes | — |
+| **Redbot** | A Discord bot | Yes | A Discord account |
+
+### Removing an App You Don't Want
+
+To remove a service, open `docker-compose.yml` and delete its `include:` line, then delete the corresponding file from the `compose/` folder. For example, to remove Pi-hole:
+1. Delete `- compose/pihole.yml` from `docker-compose.yml`
+2. Delete `compose/pihole.yml`
+3. Run `docker compose up -d` to apply
 
 ---
 
