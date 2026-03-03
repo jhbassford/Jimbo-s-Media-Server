@@ -6,23 +6,15 @@ services:
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
-    networks:
-      - t3_proxy
-    ports:
-      - "8123:8123"
+    # Host networking is required for mDNS and SSDP/UPnP device discovery
+    # (NVIDIA Shield, WiiM, Samsung soundbar, Chromecasts, etc.)
+    # Note: Traefik labels don't work in host mode — expose via Cloudflare
+    # tunnel instead by pointing ha.yourdomain.com -> http://localhost:8123
+    network_mode: host
     volumes:
       - $DOCKERDIR/appdata/homeassistant:/config
       - /etc/localtime:/etc/localtime:ro
     environment:
       TZ: $TZ
     labels:
-      - "traefik.enable=true"
-      # HTTP Routers
-      - "traefik.http.routers.homeassistant-rtr.entrypoints=websecure"
-      - "traefik.http.routers.homeassistant-rtr.rule=Host(`ha.$DOMAINNAME_1`)"
-      # Middlewares - no-auth because Home Assistant handles its own login
-      - "traefik.http.routers.homeassistant-rtr.middlewares=chain-no-auth@file"
-      # HTTP Services
-      - "traefik.http.routers.homeassistant-rtr.service=homeassistant-svc"
-      - "traefik.http.services.homeassistant-svc.loadbalancer.server.port=8123"
       - "com.centurylinklabs.watchtower.enable=true"
