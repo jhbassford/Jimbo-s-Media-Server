@@ -1,0 +1,19 @@
+services:
+  watchtower:
+    container_name: watchtower
+    image: containrrr/watchtower
+    restart: always
+    networks:
+      - socket_proxy
+    environment:
+      - TZ=$TZ
+      - DOCKER_HOST=tcp://socket-proxy:2375
+      - WATCHTOWER_CLEANUP=true                                        
+      - WATCHTOWER_INCLUDE_RESTARTING=true
+      - WATCHTOWER_POLL_INTERVAL=36000
+      - WATCHTOWER_LABEL_ENABLE=true
+      #- WATCHTOWER_SCHEDULE=0 0 9 * * *
+      #- WATCHTOWER_DEBUG=true  
+      
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"  

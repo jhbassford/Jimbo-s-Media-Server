@@ -1,0 +1,11 @@
+services:
+  # Cloudflared - Manages the secure tunnel to Cloudflare
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    restart: unless-stopped
+    networks:
+      - t3_proxy # Connect it to your Traefik network
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=$CF_TUNNEL_TOKEN

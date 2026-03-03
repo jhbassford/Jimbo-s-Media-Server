@@ -1,0 +1,57 @@
+########################### NETWORKS
+networks:
+  default:
+    driver: bridge
+  socket_proxy:
+    name: socket_proxy
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.91.0/24
+  t3_proxy:
+    name: t3_proxy
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.90.0/24
+  pihole_network:
+    name: pihole_network
+    external: true
+
+########################### SECRETS
+secrets:
+  basic_auth_credentials:
+    file: $DOCKERDIR/secrets/basic_auth_credentials
+  cf_dns_api_token:
+    file: $DOCKERDIR/secrets/cf_dns_api_token
+  discord_redbot_token:
+    file: $DOCKERDIR/secrets/discord_redbot_token
+
+include:
+  ########################### SERVICES
+  # PREFIX udms = Ultimate Docker Media Server
+  # HOSTNAME=udms - defined in .env
+
+  # CORE
+  - compose/$HOSTNAME/socket-proxy.yml
+  - compose/$HOSTNAME/traefik.yml
+  - compose/$HOSTNAME/portainer.yml
+  - compose/$HOSTNAME/dozzle.yml
+ # MEDIA
+  - compose/$HOSTNAME/plex.yml
+ 
+ # SERVER MGMT
+  - compose/$HOSTNAME/tautulli.yml
+  - compose/watchtower.yml
+ # MANAGERS
+  - compose/$HOSTNAME/radarr.yml
+  - compose/$HOSTNAME/sonarr.yml
+  - compose/$HOSTNAME/bazarr.yml
+  - compose/$HOSTNAME/overseerr.yml 
+ # DOWNLOADERS
+  - compose/$HOSTNAME/sabnzbd.yml
+
+ # THE REST
+  - compose/redbot.yml
+  - compose/cloudflared.yml
+  - compose/pihole.yml

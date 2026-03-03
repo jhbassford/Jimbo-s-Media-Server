@@ -1,0 +1,47 @@
+services:
+  # Plex - Media Server
+  plex:
+    image: plexinc/pms-docker:latest
+    container_name: plex
+    networks:
+      - default
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    # profiles: ["media", "all"]
+    devices:
+      - /dev/dri:/dev/dri # for hardware transcoding
+    ports:
+      - "32400:32400/tcp"
+      - "3005:3005/tcp"
+      - "8324:8324/tcp"
+      - "32469:32469/tcp"
+      - "1900:1900/udp"
+      - "32410:32410/udp"
+      - "32412:32412/udp"
+      - "32413:32413/udp"
+      - "32414:32414/udp"
+    volumes:
+      - $DOCKERDIR/appdata/plex:/config
+      - $DATADIR/library:/data/media # Media Folder 1
+      - /dev/shm:/data/transcode # Offload transcoding to RAM if you have enough RAM
+    environment:
+      TZ: $TZ
+      HOSTNAME: "myPlex"
+      PLEX_CLAIM_FILE: /run/secrets/plex_claim # Not required initially
+      PLEX_UID: $PUID
+      PLEX_GID: $PGID
+      ADVERTISE_IP: "http://$SERVER_IP:32400/"
+      ALLOWED_NETWORKS: $LOCAL_IPS
+    labels:
+      - "traefik.enable=true"
+      # HTTP Routers
+      - "traefik.http.routers.plex-rtr.entrypoints=websecure"
+      - "traefik.http.routers.plex-rtr.rule=Host(`plex.$DOMAINNAME_1`)"
+      # Middlewares
+      # - "traefik.http.routers.plex-rtr.middlewares=chain-oauth@file"
+      # - "traefik.http.routers.plex-rtr.middlewares=chain-basic-auth@file"
+      # HTTP Services
+      - "traefik.http.routers.plex-rtr.service=plex-svc"
+      - "traefik.http.services.plex-svc.loadbalancer.server.port=32400"
+      - "com.centurylinklabs.watchtower.enable=true"

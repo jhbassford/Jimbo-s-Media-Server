@@ -1,0 +1,19 @@
+services:
+  pihole:
+    container_name: pihole
+    image: pihole/pihole:latest
+    networks:
+      pihole_network:
+        ipv4_address: 192.168.1.105 # Pi-hole's static IP
+    environment:
+      - TZ=Australia/Sydney
+      - WEBPASSWORD=$PIHOLE_WEBPASSWORD
+      - DNS1=1.1.1.1   # Upstream DNS (Cloudflare)
+      - DNS2=1.0.0.1
+    volumes:
+      - '$DOCKERDIR/pihole/etc-pihole:/etc/pihole'
+      - '$DOCKERDIR/pihole/etc-dnsmasq.d:/etc/dnsmasq.d'
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+

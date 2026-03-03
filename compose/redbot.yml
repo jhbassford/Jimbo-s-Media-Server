@@ -1,0 +1,15 @@
+services:
+  redbot:
+    container_name: redbot
+    image: phasecorex/red-discordbot
+    restart: always
+    volumes:
+      - $DOCKERDIR/appdata/redbot:/data
+    environment:
+      - TZ=$TZ
+      - TOKEN=/run/secrets/discord_redbot_token
+      - PREFIX=;
+    secrets:
+      - discord_redbot_token
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
