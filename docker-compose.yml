@@ -39,6 +39,7 @@ include:
   - compose/$HOSTNAME/dozzle.yml
  # MEDIA
   - compose/$HOSTNAME/plex.yml
+  - compose/$HOSTNAME/homeassistant.yml
  
  # SERVER MGMT
   - compose/$HOSTNAME/tautulli.yml
