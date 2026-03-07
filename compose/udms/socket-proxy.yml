@@ -47,3 +47,5 @@ services:
       - SYSTEM=0
       - TASKS=1 # Portainer
       - VOLUMES=1 # Portainer
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"

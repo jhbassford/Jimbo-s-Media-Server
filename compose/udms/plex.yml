@@ -28,7 +28,6 @@ services:
     environment:
       TZ: $TZ
       HOSTNAME: "myPlex"
-      PLEX_CLAIM_FILE: /run/secrets/plex_claim # Not required initially
       PLEX_UID: $PUID
       PLEX_GID: $PGID
       ADVERTISE_IP: "http://$SERVER_IP:32400/"

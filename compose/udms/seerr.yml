@@ -1,0 +1,29 @@
+services:
+  # Seerr - UI for Radarr/Sonarr (migrated from Overseerr)
+  seerr:
+    image: ghcr.io/seerr-team/seerr:latest
+    container_name: seerr
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    # profiles: ["media", "arrs", "all"]
+    networks:
+      - t3_proxy
+    ports:
+      - "5055:5055"
+    volumes:
+      - $DOCKERDIR/appdata/overseerr:/app/config
+    environment:
+      TZ: $TZ
+    labels:
+      - "traefik.enable=false"
+      # HTTP Routers
+      - "traefik.http.routers.seerr-rtr.entrypoints=websecure"
+      - "traefik.http.routers.seerr-rtr.rule=Host(`seerr.$DOMAINNAME_1`)"
+      # Middlewares
+      - "traefik.http.routers.seerr-rtr.middlewares=chain-no-auth@file"
+      # HTTP Services
+      - "traefik.http.routers.seerr-rtr.service=seerr-svc"
+      - "traefik.http.services.seerr-svc.loadbalancer.server.port=5055"
+      - "com.centurylinklabs.watchtower.enable=true"

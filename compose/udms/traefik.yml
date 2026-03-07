@@ -91,3 +91,4 @@ services:
       - "traefik.http.routers.traefik-rtr.service=api@internal"
       # Middlewares
       - "traefik.http.routers.traefik-rtr.middlewares=chain-basic-auth@file"
+      - "com.centurylinklabs.watchtower.enable=true"

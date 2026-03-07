@@ -4,8 +4,9 @@ services:
     image: cloudflare/cloudflared:latest
     container_name: cloudflared
     restart: unless-stopped
-    networks:
-      - t3_proxy # Connect it to your Traefik network
+    network_mode: host
     command: tunnel --no-autoupdate run
     environment:
       - TUNNEL_TOKEN=$CF_TUNNEL_TOKEN
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
