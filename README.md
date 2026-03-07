@@ -246,9 +246,15 @@ mkdir -p ~/docker/secrets
 #    Use the "Edit zone DNS" template, scoped to your domain
 echo "paste-your-token-here" > ~/docker/secrets/cf_dns_api_token
 
-# 2. Basic Auth credentials (password-protects Traefik and other services)
-#    Generate a hashed password at: hostingcanada.org/htpasswd-generator
-#    Format: username:hashed-password
+# 2. Basic Auth credentials
+#    ⚠️  THIS IS THE PASSWORD YOU'LL USE TO ACCESS SEVERAL SERVICES IN YOUR BROWSER ⚠️
+#    Services protected by this: Dozzle, Bazarr, SABnzbd, Maintainerr, Homepage
+#    (Services with their own login — Plex, Radarr, Sonarr, Portainer, Tautulli, Seerr — are not affected)
+#
+#    Choose a username and password, then generate a bcrypt hash:
+#    → Go to: hostingcanada.org/htpasswd-generator
+#    → Enter your username and password, select "bcrypt", click Generate
+#    → Copy the result (it will look like: admin:$2y$05$abc123...)
 echo "admin:your-hashed-password" > ~/docker/secrets/basic_auth_credentials
 
 # 3. Discord bot token
@@ -472,7 +478,9 @@ The first run will take several minutes as Docker downloads all the images. Once
 
 ### On Your Home Network
 
-Open a browser and go to `http://your-server-ip:port`:
+Open a browser and go to `http://your-server-ip:port`.
+
+> **Password prompt:** Some services (Dozzle, Bazarr, SABnzbd, Maintainerr, Homepage) have no built-in login, so they're protected by HTTP basic auth — your browser will show a username/password prompt. Use the credentials from `secrets/basic_auth_credentials`. Services with their own login (Plex, Radarr, Sonarr, Portainer, Tautulli, Seerr) won't ask for this.
 
 | Service | Port | Notes |
 |---|---|---|
