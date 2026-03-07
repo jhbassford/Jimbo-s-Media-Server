@@ -49,6 +49,7 @@ include:
   - compose/$HOSTNAME/sonarr.yml
   - compose/$HOSTNAME/bazarr.yml
   - compose/$HOSTNAME/seerr.yml
+  - compose/$HOSTNAME/maintainerr.yml
  # DOWNLOADERS
   - compose/$HOSTNAME/sabnzbd.yml
 

@@ -1,0 +1,27 @@
+services:
+  maintainerr:
+    image: jorenn92/maintainerr:latest
+    container_name: maintainerr
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    networks:
+      - t3_proxy
+    ports:
+      - "6246:6246"
+    volumes:
+      - $DOCKERDIR/appdata/maintainerr:/opt/data  # dir must be chmod 777 — runs as non-root user
+    environment:
+      TZ: $TZ
+    labels:
+      - "traefik.enable=false"
+      - "traefik.http.routers.maintainerr-rtr.entrypoints=websecure"
+      - "traefik.http.routers.maintainerr-rtr.rule=Host(`maintainerr.$DOMAINNAME_1`)"
+      - "traefik.http.routers.maintainerr-rtr.middlewares=chain-basic-auth@file"
+      - "traefik.http.routers.maintainerr-rtr.service=maintainerr-svc"
+      - "traefik.http.services.maintainerr-svc.loadbalancer.server.port=6246"
+      - "com.centurylinklabs.watchtower.enable=true"
+
+networks:
+  t3_proxy:
+    external: true

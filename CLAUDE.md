@@ -28,6 +28,8 @@ Defined in `/volume1/docker/appdata/traefik3/rules/udms/`:
 - `chain-no-auth` — rate limit + secure headers (for services with their own login)
 - `chain-basic-auth` — rate limit + secure headers + HTTP basic auth (for services without login)
 
+**Rule:** Every route in `apps.yml` must have a middleware chain. Use `chain-basic-auth` for any service that doesn't have its own login screen. Use `chain-no-auth` for services that do (e.g. Sonarr, Radarr, Plex, Portainer, Tautulli, Seerr).
+
 ## Watchtower
 
 - Watchtower uses `WATCHTOWER_LABEL_ENABLE=true` — only updates containers with `com.centurylinklabs.watchtower.enable=true`.
@@ -44,3 +46,31 @@ Defined in `/volume1/docker/appdata/traefik3/rules/udms/`:
 - Docker commands require sudo (interactive password — must be run in user's own terminal).
 - File sync: `push.sh` / `pull.sh` in project root.
 - `apps.yml` is outside the synced directory — edit it directly on the NAS.
+
+### Docker API (use this instead of sudo docker commands)
+
+The Docker socket proxy is accessible at `localhost:2375` on the NAS — use it via SSH instead of `sudo docker`:
+
+```bash
+# Pull image
+ssh nas "curl -s -X POST 'http://localhost:2375/images/create?fromImage=image%2Fname&tag=latest'"
+
+# Create container
+ssh nas "curl -s -X POST http://localhost:2375/containers/create?name=mycontainer \
+  -H 'Content-Type: application/json' -d '{...}'"
+
+# Start container
+ssh nas "curl -s -X POST http://localhost:2375/containers/mycontainer/start"
+
+# Stop / remove
+ssh nas "curl -s -X POST http://localhost:2375/containers/mycontainer/stop"
+ssh nas "curl -s -X DELETE http://localhost:2375/containers/mycontainer"
+
+# Logs
+ssh nas "curl -s 'http://localhost:2375/containers/mycontainer/logs?stdout=1&stderr=1&tail=50'"
+
+# Inspect
+ssh nas "curl -s http://localhost:2375/containers/mycontainer/json"
+```
+
+Networks are referenced by name (e.g. `t3_proxy`). Always create the appdata directory before starting if the image runs as non-root (e.g. `mkdir -p /volume1/docker/appdata/myservice && chmod 777 /volume1/docker/appdata/myservice`).
