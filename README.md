@@ -35,7 +35,8 @@ These work as a team. Radarr and Sonarr find content; SABnzbd actually downloads
 | **Sonarr** | Same as Radarr, but for TV shows | Yes | SABnzbd |
 | **SABnzbd** | The actual downloader — fetches content from Usenet | Yes, but needed by Radarr/Sonarr | A Usenet provider |
 | **Bazarr** | Automatically downloads subtitles for your media | Yes | Radarr and/or Sonarr |
-| **Overseerr** | A friendly interface to browse and request new movies/shows | Yes | Radarr and/or Sonarr |
+| **Seerr** | A friendly interface to browse and request new movies/shows | Yes | Radarr and/or Sonarr |
+| **Maintainerr** | Automatically removes watched/finished content from your library and stops it being re-downloaded | Yes | Plex, Sonarr and/or Radarr |
 
 ### Management & Utilities
 
@@ -305,11 +306,19 @@ Cloudflare handles two things: **SSL certificates** (the padlock in your browser
 2. Go to **Networks → Tunnels → Create a tunnel**
 3. Choose **Cloudflared** → give it a name (e.g. `home-server`)
 4. Copy the token and paste it into your `.env` as the value of `CF_TUNNEL_TOKEN`
-5. On the **Public Hostnames** tab, add an entry for each service you want accessible remotely:
-   - Subdomain: `plex` → Service: `http://plex:32400`
-   - Subdomain: `radarr` → Service: `http://radarr:7878`
-   - Subdomain: `sonarr` → Service: `http://sonarr:8989`
-   - *(repeat for any others you want)*
+5. On the **Private Networks** or **Configuration** tab, set the tunnel ingress to a single wildcard rule:
+   - Hostname: `*.yourdomain.com` → Service: `https://localhost:4443`
+   - Enable `noTLSVerify` and `matchSNItoHost` on the origin request settings
+   - Add a catch-all `http_status:404` rule below it
+
+   This routes all subdomain traffic into Traefik, which then directs it to the right app.
+
+6. For each service you want accessible remotely, add a DNS CNAME record in Cloudflare:
+   - Go to **DNS → Records** for your domain
+   - Add a CNAME: name = `radarr`, content = `<your-tunnel-id>.cfargotunnel.com`, Proxied = on
+   - Repeat for each service (sonarr, seerr, tautulli, etc.)
+
+   > **Important:** The wildcard DNS record `*.yourdomain.com` does NOT route through the tunnel — it points to your public IP. Each service needs its own explicit CNAME pointing to the tunnel or it will get a 522 error.
 
 ---
 
@@ -408,6 +417,25 @@ http:
           - middlewares-secure-headers
 ```
 
+**`apps.yml`** — routes each subdomain to the right container. Add one router + service block per app. Use `chain-no-auth` for apps with their own login, `chain-basic-auth` for apps without:
+```yaml
+http:
+  routers:
+    radarr-rtr-file:
+      entryPoints: ["websecure"]
+      rule: "Host(`radarr.yourdomain.com`)"
+      middlewares: ["chain-no-auth@file"]
+      service: radarr-svc-file
+    # repeat for each service...
+
+  services:
+    radarr-svc-file:
+      loadBalancer: { servers: [{ url: "http://radarr:7878" }] }
+    # repeat for each service...
+```
+
+> Every route must use the `websecure` entrypoint and have a middleware chain — never leave a service exposed with no middleware.
+
 ---
 
 ### Step 9 — Create the Pi-hole Network
@@ -453,7 +481,8 @@ Open a browser and go to `http://your-server-ip:port`:
 | Radarr | `:7878` | Movie management |
 | Sonarr | `:8989` | TV show management |
 | Bazarr | `:6767` | Subtitle management |
-| Overseerr | `:5055` | Request new movies/shows |
+| Seerr | `:5055` | Request new movies/shows |
+| Maintainerr | `:6246` | Watched content cleanup rules |
 | SABnzbd | `:8084` | Download queue |
 | Tautulli | `:8181` | Plex statistics |
 | Dozzle | `:8082` | Live container logs |
