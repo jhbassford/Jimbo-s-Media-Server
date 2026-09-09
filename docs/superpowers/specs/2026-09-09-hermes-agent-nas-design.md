@@ -219,4 +219,8 @@ Success criterion: a **fully hijacked agent** still cannot
   CNAME to `<tunnel-id>.cfargotunnel.com` and a Traefik file rule in `apps.yml`.
 - ~~Resolve C5 before the first `push.sh`~~ — done, see C5.
 - Select the forward-proxy implementation for §4.5.
-- Decide which repos `/volume1/code` exposes.
+- ~~Decide which repos `/volume1/code` exposes~~ — a **new, empty `/volume1/code`
+  share**, mounted read-write, into which repos are cloned individually as
+  needed. `/volume1/docker` is deliberately **not** mounted, in either mode: it
+  contains `secrets/`, and write access there would let a prompt-injected agent
+  plant a compose change that gets deployed by hand later.
