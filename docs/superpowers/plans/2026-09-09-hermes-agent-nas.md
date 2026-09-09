@@ -47,9 +47,11 @@ Create `docs/superpowers/verify/hermes-socket-proxy.sh` locally:
 ```bash
 #!/bin/bash
 # Asserts the restricted proxy allows exactly read + restart.
-# Requires the proxy temporarily published on 127.0.0.1:2376 (test harness only).
+# Run from a container ON the hermes_socket network — the proxy is started with
+# -allowfrom=192.168.93.0/24, so a host-side test via a published port may be
+# rejected on source IP and produce misleading 403s on the "allow" checks.
 set -u
-P=http://localhost:2376
+P=http://192.168.93.2:2375
 fail=0
 chk() { # name expected_code method url
   code=$(curl -s -o /dev/null -w '%{http_code}' -X "$3" "$P$4")
@@ -74,14 +76,15 @@ exit $fail
 - [ ] **Step 2: Run it to confirm it fails**
 
 ```bash
-scp docs/superpowers/verify/hermes-socket-proxy.sh nas:/tmp/ && ssh nas 'bash /tmp/hermes-socket-proxy.sh'
+scp docs/superpowers/verify/hermes-socket-proxy.sh nas:/tmp/
+ssh nas 'sudo docker run --rm --network hermes_socket -v /tmp/hermes-socket-proxy.sh:/t.sh:ro curlimages/curl:8.8.0 sh /t.sh'
 ```
 
-Expected: every check FAILs with `000` (nothing listening on 2376).
+Expected: failure — the network `hermes_socket` does not exist yet.
 
 - [ ] **Step 3: Write the compose file**
 
-`compose/hermes-socket-proxy.yml`. The `ports:` line is the **temporary test harness** and is removed in Step 6.
+`compose/hermes-socket-proxy.yml`. Note there is **no top-level `networks:` block** — networks are declared only in the root `docker-compose.yml`, matching `socket-proxy.yml` and `traefik.yml`. A stray top-level networks block in `maintainerr.yml` previously broke every compose command on this NAS; do not reintroduce it.
 
 ```yaml
 services:
@@ -114,17 +117,12 @@ services:
       - '-allowPOST=/(v1\.[0-9]{1,2}/)?containers/[a-zA-Z0-9_.-]+/restart'
       - '-watchdoginterval=3600'
       - '-stoponwatchdog'
-    ports:
-      - "127.0.0.1:2376:2375"   # TEMPORARY test harness — removed in Step 6
+    # No ports: — reachable only from the hermes_socket network.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       hermes_socket:
         ipv4_address: 192.168.93.2
-
-networks:
-  hermes_socket:
-    external: true
 ```
 
 - [ ] **Step 4: Add the network and include to `docker-compose.yml`**
@@ -154,22 +152,18 @@ In `include:`, under a new `# AGENT` heading before `# THE REST`:
 git diff --stat                # expect: no changes. If there are, STOP and reconcile.
 ./push.sh
 ssh nas 'cd /volume1/docker && sudo docker compose up -d hermes-socket-proxy'
-ssh nas 'bash /tmp/hermes-socket-proxy.sh'
+ssh nas 'sudo docker run --rm --network hermes_socket -v /tmp/hermes-socket-proxy.sh:/t.sh:ro curlimages/curl:8.8.0 sh /t.sh'
 ```
 
 Expected: **all 13 checks PASS.** If any DENY check returns 200, the regex is too broad — fix before continuing. Do not proceed with a failing deny.
 
-- [ ] **Step 6: Remove the test harness and redeploy**
-
-Delete the two `ports:` lines from `compose/hermes-socket-proxy.yml`, then:
+- [ ] **Step 6: Confirm it is not reachable from the host**
 
 ```bash
-./push.sh
-ssh nas 'cd /volume1/docker && sudo docker compose up -d --force-recreate hermes-socket-proxy'
 ssh nas 'curl -s -o /dev/null -w "%{http_code}\n" --max-time 3 http://localhost:2376/version'
 ```
 
-Expected: `000` — no longer reachable from the host.
+Expected: `000` — the proxy publishes no host port.
 
 - [ ] **Step 7: Commit**
 
@@ -284,11 +278,9 @@ services:
     networks:
       hermes_net:
         ipv4_address: 192.168.92.2
-
-networks:
-  hermes_net:
-    external: true
 ```
+
+No top-level `networks:` block — see the note in Task 1 Step 3.
 
 - [ ] **Step 5: Add the network and include to `docker-compose.yml`**
 
@@ -394,15 +386,9 @@ services:
         ipv4_address: 192.168.92.10
       hermes_socket:
         ipv4_address: 192.168.93.10
-
-networks:
-  t3_proxy:
-    external: true
-  hermes_net:
-    external: true
-  hermes_socket:
-    external: true
 ```
+
+No top-level `networks:` block — see the note in Task 1 Step 3.
 
 Dashboard auth credentials are **not** set here — they are secrets, added in Task 6 via the NAS-side `.env`, which `push.sh` does not sync.
 
