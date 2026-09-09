@@ -194,6 +194,32 @@ services:
       # $DOCKERDIR/appdata/hermes-etc/ verbatim on any rebuild.
       - $DOCKERDIR/appdata/hermes-etc/passwd:/etc/passwd:ro
       - $DOCKERDIR/appdata/hermes-etc/group:/etc/group:ro
+      # config.yaml + .env carry EVERY spec §4.7 control: skills.auto_install,
+      # messaging.*.allowed_users, tool_loop_guardrails.*, dashboard.trusted_proxies,
+      # browser.enabled — plus the OpenRouter key, the GitHub PAT and the dashboard
+      # credentials. They deliberately do NOT live in $DOCKERDIR/appdata/hermes,
+      # which is the READ-WRITE /opt/data mount: a prompt-injected agent that could
+      # rewrite its own guardrails and then restart itself through the socket proxy
+      # (POST /containers/<id>/restart) would be reloading guardrails of its own
+      # choosing, which makes them advisory rather than enforced. Mounting them :ro
+      # from hermes-etc closes that loop — combined with read_only: true and
+      # cap_drop: ALL (no CAP_DAC_OVERRIDE) there is no in-container write path at
+      # all. Changing config is now an OPERATOR action on the host followed by a
+      # restart. That property is the point, not a side effect.
+      #
+      # REQUIRED host ownership/mode (git preserves neither — see
+      # appdata-templates/README.md, which is the only record):
+      #   config.yaml  root:root 0644  (agent reads via the other-read bit)
+      #   hermes.env   root:10   0640  (group 10 == the container's PGID, the only
+      #                                 group the agent process holds; owner root so
+      #                                 it cannot rewrite it; no world-read because
+      #                                 it holds secrets)
+      # As with passwd/group above, both files MUST exist on the host before
+      # `compose up`: Docker silently creates a DIRECTORY at a bind-mount target
+      # that does not exist, and a directory at /opt/data/config.yaml breaks the
+      # container. Templates: appdata-templates/hermes/{config.yaml,hermes.env}.
+      - $DOCKERDIR/appdata/hermes-etc/config.yaml:/opt/data/config.yaml:ro
+      - $DOCKERDIR/appdata/hermes-etc/hermes.env:/opt/data/.env:ro
     environment:
       PUID: 1000
       PGID: 10
