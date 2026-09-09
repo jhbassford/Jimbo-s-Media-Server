@@ -3,7 +3,7 @@ services:
   # the DOCKER-USER rules in Task 4 are the ENFORCEMENT. A library that
   # ignores HTTP_PROXY does not get out — it just fails.
   #
-  # Deviations from the brief's literal YAML, both forced by empirical
+  # Deviations from the brief's literal YAML, all forced by empirical
   # failures on this NAS's kernel/docker combo (DSM 4.4.302, no cgroup v2) —
   # see task-2-report.md "Deviations" section for the full investigation:
   #
@@ -18,24 +18,47 @@ services:
   #      directly with `-d` (foreground) `-c` (our conf) bypasses it
   #      entirely while leaving the conf/filter mounts genuinely read-only —
   #      the property that matters: even a compromised tinyproxy process
-  #      cannot rewrite its own allowlist.
-  #   2. `read_only: true` (container-wide rootfs) is dropped, and the
-  #      `/var/run` tmpfs it required is dropped with it. Empirically, with
-  #      `read_only: true` tinyproxy's child-process pool fails at startup
-  #      with "Could not allocate memory for child counting" (an internal
-  #      mmap-based shared counter) regardless of tmpfs mounts, caps, or
-  #      running user — reproduced in isolation, independent of the ro
-  #      config-file mounts. Removing only this one setting fixed it; every
-  #      other hardening control (cap_drop: ALL, no-new-privileges, ro
-  #      mounts on both config files, no ports:) stays in place.
-  #   3. `user: "65534:65533"` (nobody:nogroup numeric IDs) is added. With
+  #      cannot rewrite its own allowlist. One side effect: because run.sh's
+  #      setAccess() never runs, the `Allow 192.168.92.0/24` line in our
+  #      hand-written conf stays live (it's normally commented out when
+  #      `command: ANY` runs via run.sh). This is a client-source-IP ACL on
+  #      top of the domain filter — tightening, not loosening — but it means
+  #      only clients whose source address is inside hermes_net's /24 can
+  #      use the proxy at all, which is what we want anyway since only
+  #      Hermes will ever be attached to this network.
+  #   2. `user: "65534:65533"` (nobody:nogroup numeric IDs) is added. With
   #      `cap_drop: ALL`, the container never has CAP_SETUID/CAP_SETGID, so
   #      tinyproxy's own root->nobody privilege drop (driven by the
-  #      `User nobody` / `Group nogroup` lines in tinyproxy.conf) fails.
-  #      Starting the process already-unprivileged sidesteps the drop
-  #      entirely (tinyproxy logs "Not running as root, so not changing
-  #      UID/GID" and continues normally) without adding any capability
-  #      back.
+  #      `User nobody` / `Group nogroup` lines in tinyproxy.conf) fails
+  #      ("Unable to change to group 'nogroup'"). Starting the process
+  #      already-unprivileged sidesteps the drop entirely (tinyproxy logs
+  #      "Not running as root, so not changing UID/GID" and continues
+  #      normally) without adding any capability back — better than
+  #      restoring SETUID/SETGID to a cap_drop:ALL container, since this
+  #      needs zero capabilities restored.
+  #   3. `tmpfs: [/tmp]` is added (kept alongside `read_only: true`, NOT a
+  #      replacement for it). Root-caused with strace: tinyproxy's
+  #      shared-memory allocator for its child-process bookkeeping does NOT
+  #      use true anonymous MAP_ANONYMOUS|MAP_SHARED on this Alpine 3.10
+  #      build — it opens a real file under /tmp
+  #      (`open("/tmp/tinyproxy.shared.XXXXXX", O_RDWR|O_CREAT|O_EXCL, 0600)`,
+  #      then immediately mmaps MAP_SHARED and unlinks it — the classic
+  #      "unlinked tempfile as anonymous shared memory" portability trick).
+  #      With `read_only: true` and no writable /tmp, that open() fails with
+  #      EROFS, which surfaces as "Could not allocate memory for child
+  #      counting." A `/tmp` tmpfs is sufficient and was confirmed
+  #      sufficient in isolation — `read_only: true` is otherwise fully
+  #      intact, plus every other hardening control (cap_drop: ALL,
+  #      no-new-privileges, ro mounts on both config files, no ports:).
+  #
+  # NAS-side `tinyproxy.conf` also needs 4 lines beyond what the brief's
+  # Step 3 heredoc specifies (StartServers/MinSpareServers/MaxSpareServers/
+  # MaxRequestsPerChild — thread-pool sizing, not security-relevant; without
+  # them tinyproxy fails to start at all with `"StartServers" must be
+  # greater than zero`). The complete, corrected file contents are checked
+  # into this repo at appdata-templates/hermes-egress/ as the source of
+  # truth — copy them to $DOCKERDIR/appdata/hermes-egress/ on any rebuild,
+  # do not replay the brief's Step 3 heredoc verbatim.
   hermes-egress-proxy:
     image: monokal/tinyproxy:latest
     container_name: hermes-egress-proxy
@@ -43,6 +66,9 @@ services:
     user: "65534:65533"
     entrypoint: ["/usr/bin/tinyproxy", "-d", "-c", "/etc/tinyproxy/tinyproxy.conf"]
     mem_limit: 64M
+    read_only: true
+    tmpfs:
+      - /tmp
     cap_drop:
       - ALL
     security_opt:
