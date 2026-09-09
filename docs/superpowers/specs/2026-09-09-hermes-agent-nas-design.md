@@ -169,8 +169,15 @@ the router cannot attribute the traffic.
 
 Three things the router genuinely contributes:
 
-1. **Assert no inbound path.** Audit and remove any port-forward touching
-   192.168.1.104. The tunnel is outbound-only and correctly bypasses the UDM.
+1. **Audit the inbound path.** The tunnel is outbound-only and correctly bypasses
+   the UDM. However, an audit on 2026-09-09 found this section's original
+   assumption — that no inbound path exists — to be **false**: a `Plex Remote
+   Access` port forward maps `tcp/32400` from `any` to `192.168.1.104`. That is a
+   real internet-facing listener on the host that will run the agent. Removing it
+   breaks remote Plex playback, so it is an operator decision rather than an
+   automatic removal; it must be consciously kept or dropped, not ignored. UPnP
+   must also be confirmed disabled, so a compromised container cannot open its
+   own inbound port.
 2. **Lateral containment.** Zone policy restricting the NAS *as a source* from
    reaching UDM management and the IoT VLAN (192.168.2.0/24, VLAN 20), so an
    agent compromise cannot pivot to IoT devices or the router UI.
