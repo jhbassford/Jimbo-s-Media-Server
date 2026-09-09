@@ -22,3 +22,6 @@ services:
       - "traefik.http.services.maintainerr-svc.loadbalancer.server.port=6246"
       - "com.centurylinklabs.watchtower.enable=true"
 
+networks:
+  t3_proxy:
+    external: true

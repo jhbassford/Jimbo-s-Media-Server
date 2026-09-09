@@ -3,24 +3,16 @@ services:
   plex:
     image: plexinc/pms-docker:latest
     container_name: plex
-    networks:
-      - default
+    # host networking so Plex sees real client IPs (otherwise Docker bridge NAT
+    # rewrites every remote source to 172.18.0.1 and Plex classifies all remote
+    # streams as LAN, defeating bandwidth limits and "Remote Quality" presets)
+    network_mode: host
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
     # profiles: ["media", "all"]
     devices:
       - /dev/dri:/dev/dri # for hardware transcoding
-    ports:
-      - "32400:32400/tcp"
-      - "3005:3005/tcp"
-      - "8324:8324/tcp"
-      - "32469:32469/tcp"
-      - "1900:1900/udp"
-      - "32410:32410/udp"
-      - "32412:32412/udp"
-      - "32413:32413/udp"
-      - "32414:32414/udp"
     volumes:
       - $DOCKERDIR/appdata/plex:/config
       - $DATADIR/library:/data/media # Media Folder 1
