@@ -541,6 +541,64 @@ cd ~/docker && sudo docker compose up -d
 
 ---
 
+## Hermes Agent (branch `hermes-agent`)
+
+`docker-compose.yml` includes three services under the `# AGENT` heading that
+have nothing to do with media: `hermes-socket-proxy`, `hermes-egress-proxy` and
+`hermes`. They deploy **Hermes Agent** (Nous Research) as a chat / NAS-ops /
+coding assistant.
+
+An LLM agent that reads web pages, email and chat messages is
+**prompt-injectable by design**. The realistic attack is not someone port
+scanning the NAS; it is the agent being told what to do by content it was asked
+to read. Everything below exists so that a *fully hijacked* agent still cannot
+escalate, pivot or exfiltrate. Read
+`docs/superpowers/specs/2026-09-09-hermes-agent-nas-design.md` before changing
+any of it.
+
+### The three services
+
+| Service | What it is |
+|---|---|
+| `hermes-socket-proxy` | A **second, separate** Docker socket proxy — `wollomatic/socket-proxy`, which filters by HTTP method *and* path regex. It grants the agent read plus `POST /containers/<name>/restart` for an explicit list of media containers, and nothing else. The stack's existing `socket-proxy` filters by path prefix only and cannot express "restart but not delete"; anything that can create a container can mount `/` and is root on the NAS. The agent is **never** attached to `socket_proxy`. |
+| `hermes-egress-proxy` | A Tinyproxy forward proxy with a default-deny domain allowlist and `ConnectPort 443` only, so it cannot be used as a generic TCP tunnel. This is the **allowlist**. |
+| `hermes` | The agent itself: non-root (`1000:10`), `read_only: true`, `cap_drop: ALL`, `no-new-privileges`, memory/CPU/rlimit capped, **no published host ports at all** — reachable only as `http://hermes:9119` from Traefik. Pinned by digest, with no Watchtower label: a self-updating agent is a supply-chain hole. |
+
+### Things that are easy to get wrong
+
+- **The egress proxy is only the allowlist, not the enforcement.**
+  `HTTP_PROXY`/`HTTPS_PROXY` are advisory — any library that ignores them walks
+  straight past. Enforcement is `/volume1/docker/scripts/hermes-firewall.sh`,
+  which drops traffic from the agent's static IPs in `DOCKER-USER` **and** on
+  the `INPUT` path. Without that script the agent is completely uncontained,
+  and nothing anywhere reports an error. It is the one part of this design that
+  fails **open**.
+- **`push.sh` syncs only `docker-compose.yml` and `compose/`.** Everything in
+  `appdata-templates/` — the read-only config the agent is not allowed to
+  rewrite, the egress allowlist, and the firewall script — must be delivered to
+  the NAS **separately**, with specific ownership and modes. Git preserves
+  neither, so `appdata-templates/README.md` is the only record. Follow it.
+- **Bind-mount targets must exist on the host first.** Docker silently creates
+  a *directory* at a bind-mount source that does not exist. A directory at
+  `/etc/passwd` or `/opt/data/config.yaml` breaks the container.
+- **The agent's guardrails are deliberately not writable by the agent.**
+  `config.yaml` and `.env` live in `appdata/hermes-etc` (root-owned, mounted
+  `:ro`), not in the read-write `/opt/data` state directory. Changing a control
+  is an operator action on the host followed by a restart. That is intentional:
+  otherwise a hijacked agent could rewrite its own limits and restart itself to
+  load them.
+
+### Status
+
+Tasks 1–3 of 8 (`docs/superpowers/plans/2026-09-09-hermes-agent-nas.md`) are
+implemented. Host firewall, Cloudflare ingress, secrets, the threat-model
+acceptance test and the UniFi work are not. **The `hermes` container is
+deliberately left stopped** until the firewall (Task 4) and the secrets
+(Task 6) are in place — until then it has no containment and no credentials.
+The two proxies run continuously and are harmless on their own.
+
+---
+
 ## Managing Remotely from Another Computer (Optional)
 
 If you want to edit config files from your everyday computer without SSH-ing in every time:
