@@ -475,6 +475,35 @@ git commit -m "Add hardened Hermes agent container, no published ports"
 
 ### Task 4: Egress enforcement and lateral containment (iptables)
 
+> **AS-BUILT 2026-09-09 — APPLIED AND VERIFIED 20/20.** The rules are live on the
+> NAS. Source of truth for the script is
+> `appdata-templates/scripts/hermes-firewall.sh`; the acceptance test is
+> `docs/superpowers/verify/hermes-containment.sh`. Three corrections came out of
+> actually running it, and they supersede the step text below:
+>
+> 1. **Never touch the built-in `INPUT` chain on this host.** `iptables -D` against
+>    a built-in returns **0 unconditionally** here — `-C INPUT` correctly reports
+>    the rule absent while `-D INPUT` claims success — so the usual
+>    `while iptables -D ...` dedupe idiom **never terminates**. It hung the deploy.
+>    A rule inserted into `INPUT` might also not be removable, which is worse than
+>    not inserting it. The host hook is `INPUT_FIREWALL`, a *custom* chain where
+>    `-C`/`-D` behave correctly and which is the only rule in `INPUT`
+>    (`-A INPUT -j INPUT_FIREWALL`), so hooking it at position 1 sees all
+>    host-bound traffic. All delete loops are bounded.
+> 2. **External DNS from the agent is blocked, deliberately.** dockerd forwards
+>    external queries from inside the container netns, so they carry a Hermes
+>    source IP and are dropped. Nothing needs it: Tinyproxy resolves on the
+>    agent's behalf (`openrouter.ai` by name through the proxy → 200) and internal
+>    container names still resolve. It also closes DNS tunnelling, which a domain
+>    allowlist cannot see. `DNS-BROKEN` from inside Hermes is the PASS condition.
+> 3. **Idempotency is checked by JUMP count, not chain-rule count.** The chain is
+>    flush-and-refilled so its own rule count is always stable; only
+>    `iptables-save | grep -c -- '-j HERMES-CONTAIN'` (expect exactly **2**)
+>    reveals accumulating duplicates.
+>
+> Remaining: the two DSM Task Scheduler entries (Step 5). `synoschedtask` has no
+> `--add`, so this is GUI-only.
+
 The proxy in Task 2 is opt-in; this task makes it inescapable. Runs after Task 3
 because it keys on Hermes' static IPs.
 
