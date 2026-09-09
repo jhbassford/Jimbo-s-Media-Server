@@ -91,7 +91,17 @@ chk "GET plex logs"             200 GET    "/containers/plex/logs?stdout=1&tail=
 
 # --- The one mutation this proxy exists to grant — proven for real, against
 #     the disposable canary, including the "?t=5" query allowance (Finding 4).
-#     Never exercised against plex or any other in-use container. ---
+#     Never exercised against plex or any other in-use container.
+#
+#     The restart allowlist is a NAME alternation, not a wildcard, so the canary
+#     name must appear in it or this check cannot pass. Two ways to satisfy that
+#     were available: rename the canary to one of the production names, or list
+#     the canary name in the regex. The first is impossible without restarting a
+#     live service on every verification run (plex/pihole/an *arr — this is the
+#     household's media and DNS box), so the second was chosen: the compose file
+#     lists `hermes-restart-canary` explicitly, with a comment saying why. It
+#     grants nothing to a hijacked agent — the proxy cannot create containers and
+#     cannot rename them, so outside a verification run that name is a 404. ---
 chk "POST canary restart"       204 POST   "/containers/$CANARY/restart?t=5"
 chk "GET canary stats"          200 GET    "/containers/$CANARY/stats?stream=false"
 
@@ -106,5 +116,35 @@ chkdeny "DENY container stop"                  POST   "/containers/plex/stop"   
 chkdeny "DENY build"                           POST   "/build"                                        403
 chkdeny "DENY logs path traversal (to images)" GET    "/containers/plex/logs/../../images/json"        403
 chkdeny "DENY logs path traversal (to json)"   GET    "/containers/plex/logs/../json"                  403
+
+# --- Restart is SCOPED, not universal. The allowlist is an explicit alternation
+#     of the media-stack containers the ops role manages; everything that is
+#     containment infrastructure or household infrastructure is excluded. These
+#     checks prove the exclusions are real, not just intended. Restarting any of
+#     these would be a containment escape or a household outage:
+#       hermes              -> reload guardrails the agent had just rewritten
+#       hermes-egress-proxy -> its own egress allowlist
+#       hermes-socket-proxy -> this proxy
+#       pihole              -> DNS for the whole house
+#       traefik             -> all ingress
+#       cloudflared         -> all remote access
+#       socket-proxy        -> the PERMISSIVE proxy (container create == root)
+#       watchtower/portainer/dozzle
+#     A DENY here is proven by the status code alone: the request never reaches
+#     the Docker socket, so nothing is actually restarted by running this. ---
+chkdeny "DENY restart hermes (self)"           POST   "/containers/hermes/restart"                     403
+chkdeny "DENY restart pihole (household DNS)"  POST   "/containers/pihole/restart"                     403
+chkdeny "DENY restart traefik (all ingress)"   POST   "/containers/traefik/restart"                    403
+chkdeny "DENY restart cloudflared (tunnel)"    POST   "/containers/cloudflared/restart"                403
+chkdeny "DENY restart hermes-egress-proxy"     POST   "/containers/hermes-egress-proxy/restart"        403
+chkdeny "DENY restart hermes-socket-proxy"     POST   "/containers/hermes-socket-proxy/restart"        403
+chkdeny "DENY restart socket-proxy (permissive)" POST "/containers/socket-proxy/restart"               403
+chkdeny "DENY restart watchtower"              POST   "/containers/watchtower/restart"                 403
+chkdeny "DENY restart portainer"               POST   "/containers/portainer/restart"                  403
+chkdeny "DENY restart dozzle"                  POST   "/containers/dozzle/restart"                     403
+# A prefix of an allowlisted name must not match either — the alternation is
+# anchored, so "plex-evil" and a bare "plex/restart/../hermes/restart" both fail.
+chkdeny "DENY restart non-allowlisted name"    POST   "/containers/plex-evil/restart"                  403
+chkdeny "DENY restart traversal to hermes"     POST   "/containers/plex/restart/../hermes/restart"     403
 
 exit $fail

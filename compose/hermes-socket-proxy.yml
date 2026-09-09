@@ -27,9 +27,35 @@ services:
       - '-allowGET=/(v1\.[0-9]{1,2}/)?containers/[a-zA-Z0-9_.-]+/json'
       - '-allowGET=/(v1\.[0-9]{1,2}/)?containers/[a-zA-Z0-9_.-]+/logs(\?.*)?'
       - '-allowGET=/(v1\.[0-9]{1,2}/)?containers/[a-zA-Z0-9_.-]+/stats(\?.*)?'
-      # The ONLY mutation permitted. "(\?.*)?" admits a legitimate stop-timeout
-      # query (e.g. "?t=5") without opening up any other path.
-      - '-allowPOST=/(v1\.[0-9]{1,2}/)?containers/[a-zA-Z0-9_.-]+/restart(\?.*)?'
+      # The ONLY mutation permitted, and it is scoped to an EXPLICIT ALLOWLIST of
+      # container names rather than a name wildcard. A wildcard here
+      # ([a-zA-Z0-9_.-]+) covers every container on the box, which means a
+      # prompt-injected agent could restart:
+      #   hermes                — itself, reloading any config it had rewritten
+      #   hermes-egress-proxy   — its own egress allowlist
+      #   hermes-socket-proxy   — this proxy
+      #   pihole                — DNS for the entire household
+      #   traefik / cloudflared — all ingress and all remote access
+      #   watchtower            — the updater
+      #   socket-proxy          — the PERMISSIVE proxy serving portainer/dozzle
+      # None of those are "ops assistant" actions; all of them are denial of
+      # service or containment escapes. The alternation below is exactly the set
+      # the ops role needs (spec §1 role 2: "read + restart containers"), and
+      # nothing else. Adding a name here is a deliberate, reviewable act.
+      #
+      # `hermes-restart-canary` is the disposable alpine container that
+      # docs/superpowers/verify/hermes-socket-proxy.sh creates through the
+      # PERMISSIVE proxy purely to prove POST restart genuinely returns 204. It
+      # is listed here on purpose. The alternative was to restart a live service
+      # (plex/pihole/an *arr) on every verification run, which is unacceptable on
+      # a NAS the household depends on. Granting it costs nothing: this proxy
+      # cannot create containers, cannot rename them (no POST .../rename), and no
+      # container by that name exists outside a verification run — so for a
+      # hijacked agent the name resolves to 404, not to a capability.
+      #
+      # "(\?.*)?" admits a legitimate stop-timeout query (e.g. "?t=5") without
+      # opening up any other path.
+      - '-allowPOST=/(v1\.[0-9]{1,2}/)?containers/(plex|radarr|sonarr|bazarr|sabnzbd|seerr|tautulli|maintainerr|hermes-restart-canary)/restart(\?.*)?'
       # DELETE is intentionally not configured at all (no -allowDELETE flag) —
       # this states exactly and only what is permitted. wollomatic/socket-proxy
       # returns 405 for a method with no -allow flag at all (rejected by the
