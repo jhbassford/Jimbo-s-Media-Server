@@ -85,7 +85,15 @@ their own change.
 
 - New `compose/hermes.yml`, included from `docker-compose.yml`.
 - Runs as `PUID=1000` / `PGID=10`. Never root; `HERMES_ALLOW_ROOT_GATEWAY` unset.
-- State: `/volume1/docker/appdata/hermes` → `/opt/data`, mode `0700`.
+- State: `/volume1/docker/appdata/hermes` → `/opt/data`, owner `1000:10`, mode
+  `0700` — read-write, and holds only the agent own state.
+- Configuration and secrets are deliberately **outside** that writable mount:
+  `/volume1/docker/appdata/hermes-etc/{config.yaml,hermes.env}` are root-owned
+  and bind-mounted read-only at `/opt/data/config.yaml` and `/opt/data/.env`.
+  Every §4.7 control lives there, so a hijacked agent cannot rewrite its own
+  guardrails; changing them is an operator action on the host plus a restart.
+  Templates and the required ownership/mode for each file are recorded in
+  `appdata-templates/` — git preserves neither.
 - Image pinned by **digest**, not `:latest`.
 - Watchtower label deliberately omitted (`WATCHTOWER_LABEL_ENABLE=true` means no
   label = no auto-update). A self-updating agent is a supply-chain hole.
@@ -98,7 +106,17 @@ their own change.
   as PID 1, which may require additional writable paths; if `read_only` prevents
   boot, the fallback is to add narrowly-scoped tmpfs mounts for exactly the paths
   s6 needs — not to drop `read_only`. Verify during implementation.
-- `mem_limit: 4g`, `cpus: 2.0`, `pids_limit`
+- `mem_limit: 4g` + `memswap_limit: 4g` (without the second, Docker silently
+  grants 4 GB RAM **plus** 4 GB swap), `cpu_shares: 512`, `ulimits: nproc: 1024`
+  and `nofile: 4096`.
+  **Not `cpus:` and not `pids_limit`.** DSM 4.4.302 was built without
+  `CONFIG_CGROUP_PIDS`, so `pids_limit` is silently discarded
+  (`HostConfig.PidsLimit` reads back `nil`), and it has no CFS bandwidth
+  control, so setting `cpus:` makes `docker compose up` refuse to create the
+  container at all. `cpu_shares` (`CONFIG_FAIR_GROUP_SCHED`) and RLIMIT_NPROC
+  (a POSIX rlimit with no cgroup dependency, unraisable without
+  `CAP_SYS_RESOURCE`) achieve the intent and are verified live in-container via
+  `/proc/self/limits` and `/sys/fs/cgroup/cpu/cpu.shares`.
 - Filesystem reach limited to `/opt/data` and a dedicated `/volume1/code` bind
   for the coding role. No media shares, no `/volume1/docker` root, no `/etc`.
 - Browser/Playwright disabled initially (Chromium on a J4125 is impractical).
@@ -119,9 +137,14 @@ Allowlist, exhaustively:
 | GET | `/containers/<id>/logs` |
 | GET | `/containers/<id>/stats` |
 | GET | `/version`, `/info` |
-| POST | `/containers/<id>/restart` |
+| POST | `/containers/<name>/restart` — **scoped to an explicit name allowlist**, not a wildcard: `plex`, `radarr`, `sonarr`, `bazarr`, `sabnzbd`, `seerr`, `tautulli`, `maintainerr` |
 
 Everything else returns 403: no exec, create, delete, images, volumes, build.
+The restart scope deliberately EXCLUDES `hermes` itself (so the agent cannot
+reload guardrails it has rewritten), both hermes proxies, `traefik`,
+`cloudflared`, `pihole` (household DNS), `socket-proxy`, `watchtower`,
+`portainer` and `dozzle` — none of those are ops-assistant actions, and all of
+them are either denial of service or a containment escape.
 Hermes is **never** attached to the existing `socket_proxy` network, which
 remains untouched.
 
@@ -150,8 +173,9 @@ Requires a CNAME for the chosen hostname → `<tunnel-id>.cfargotunnel.com`, per
 
 Per C3, enforced on the NAS, not the router.
 
-Note that Hermes is attached to **two** networks — `t3_proxy` (ingress from
-Traefik only) and its own `hermes_net` (egress). Filtering must therefore match
+Note that Hermes is attached to **three** networks — `t3_proxy` (ingress from
+Traefik), its own `hermes_net` (egress via the forward proxy) and `hermes_socket`
+(the restricted Docker socket proxy). Filtering must therefore match
 the **container's own source IPs**, not a bridge interface: blocking the
 `t3_proxy` bridge would break every other proxied service on it, and a
 multi-homed container's choice of egress interface is not otherwise guaranteed.
@@ -208,7 +232,25 @@ Success criterion: a **fully hijacked agent** still cannot
 - reach the IoT VLAN or the router UI (§4.6);
 - exfiltrate to an arbitrary internet host (§4.5);
 - read media shares or other services' config (§4.2);
-- silently update its own code (§4.1).
+- silently update its own code (§4.1);
+- rewrite its own guardrails and reload them (§4.7 controls live in a
+  root-owned, read-only mount outside the writable state directory, and the
+  agent cannot restart itself — `hermes` is excluded from the socket proxy
+  restart allowlist).
+
+**Accepted residual: the allowlisted destinations are themselves exfiltration
+channels.** "Cannot exfiltrate to an arbitrary internet host" is the honest
+claim; "cannot exfiltrate" is not. github.com, discord.com, api.telegram.org
+and OpenRouter are all reachable by design and all accept attacker-chosen
+content — a hijacked agent can push to a repo, post to a channel, or embed data
+in a prompt. Narrowing the allowlist further would break the agent core
+functions, so the mitigation is not the egress filter: it is the messaging
+**sender allowlist** (an unknown sender gets no reply channel), **scoped,
+independently revocable credentials** (a fine-grained PAT limited to specific
+repos, a dedicated OpenRouter key with a hard credit cap), and the fact that the
+agent cannot read the media library, the stack secrets, or any other service
+config, so there is comparatively little of value to send. Accepted knowingly,
+not overlooked.
 
 ## 6. Explicitly out of scope
 
