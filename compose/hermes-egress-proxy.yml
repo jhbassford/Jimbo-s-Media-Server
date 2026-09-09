@@ -60,7 +60,17 @@ services:
   # truth — copy them to $DOCKERDIR/appdata/hermes-egress/ on any rebuild,
   # do not replay the brief's Step 3 heredoc verbatim.
   hermes-egress-proxy:
-    image: monokal/tinyproxy:latest
+    # Pinned by digest, resolved 2026-09-09 on the NAS from the already-pulled
+    # monokal/tinyproxy:latest (image id sha256:bce423180120, Created
+    # 2020-08-03T13:55:42Z). This was the only unpinned image in the Hermes set,
+    # and it sits ON the egress security boundary in a design whose stated
+    # principle is digest pinning — a silently-swapped :latest here would be a
+    # silently-swapped allowlist enforcer.
+    # CAVEAT: this image's base is Alpine 3.10, EOL since 2021, and the image
+    # itself has not been rebuilt since 2020. Pinning freezes it rather than
+    # fixing it; a maintained replacement (or a small self-built tinyproxy image)
+    # is worth doing before this deployment is considered finished.
+    image: monokal/tinyproxy@sha256:2c1b6f187fe18a993ec6e88cdb12c8f1d28d7416bd73492289aa5f74f687c672
     container_name: hermes-egress-proxy
     restart: unless-stopped
     user: "65534:65533"
@@ -68,7 +78,14 @@ services:
     mem_limit: 64M
     read_only: true
     tmpfs:
-      - /tmp
+      # Options match compose/hermes.yml's /tmp. tinyproxy only ever open()s,
+      # mmap()s and unlink()s a single temp file here (confirmed by strace — see
+      # deviation 3 above), so it never execs from /tmp and noexec costs nothing
+      # functionally while closing a write-a-binary-then-exec path inside the
+      # container that is the agent's sole egress point. size=16m also caps a
+      # mild DoS lever: there is no cgroup v2 on this NAS, so tmpfs pages are not
+      # reliably accounted against mem_limit: 64M.
+      - /tmp:noexec,nosuid,nodev,size=16m
     cap_drop:
       - ALL
     security_opt:
