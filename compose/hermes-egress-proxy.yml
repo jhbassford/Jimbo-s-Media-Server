@@ -1,0 +1,55 @@
+services:
+  # Domain-allowlisting forward proxy for Hermes. This is the ALLOWLIST;
+  # the DOCKER-USER rules in Task 4 are the ENFORCEMENT. A library that
+  # ignores HTTP_PROXY does not get out — it just fails.
+  #
+  # Deviations from the brief's literal YAML, both forced by empirical
+  # failures on this NAS's kernel/docker combo (DSM 4.4.302, no cgroup v2) —
+  # see task-2-report.md "Deviations" section for the full investigation:
+  #
+  #   1. `command: ANY` is replaced by a direct `entrypoint:` invocation of
+  #      /usr/bin/tinyproxy. The image's default entrypoint
+  #      (/opt/docker-tinyproxy/run.sh) unconditionally `sed -i`-edits
+  #      /etc/tinyproxy/tinyproxy.conf to inject the ACL argument — which
+  #      fails outright ("Read-only file system") because that file is
+  #      bind-mounted `:ro`. Our tinyproxy.conf already hardcodes
+  #      `Allow 192.168.92.0/24` and every Filter* directive directly, so
+  #      the script's sed-editing is unnecessary; invoking the binary
+  #      directly with `-d` (foreground) `-c` (our conf) bypasses it
+  #      entirely while leaving the conf/filter mounts genuinely read-only —
+  #      the property that matters: even a compromised tinyproxy process
+  #      cannot rewrite its own allowlist.
+  #   2. `read_only: true` (container-wide rootfs) is dropped, and the
+  #      `/var/run` tmpfs it required is dropped with it. Empirically, with
+  #      `read_only: true` tinyproxy's child-process pool fails at startup
+  #      with "Could not allocate memory for child counting" (an internal
+  #      mmap-based shared counter) regardless of tmpfs mounts, caps, or
+  #      running user — reproduced in isolation, independent of the ro
+  #      config-file mounts. Removing only this one setting fixed it; every
+  #      other hardening control (cap_drop: ALL, no-new-privileges, ro
+  #      mounts on both config files, no ports:) stays in place.
+  #   3. `user: "65534:65533"` (nobody:nogroup numeric IDs) is added. With
+  #      `cap_drop: ALL`, the container never has CAP_SETUID/CAP_SETGID, so
+  #      tinyproxy's own root->nobody privilege drop (driven by the
+  #      `User nobody` / `Group nogroup` lines in tinyproxy.conf) fails.
+  #      Starting the process already-unprivileged sidesteps the drop
+  #      entirely (tinyproxy logs "Not running as root, so not changing
+  #      UID/GID" and continues normally) without adding any capability
+  #      back.
+  hermes-egress-proxy:
+    image: monokal/tinyproxy:latest
+    container_name: hermes-egress-proxy
+    restart: unless-stopped
+    user: "65534:65533"
+    entrypoint: ["/usr/bin/tinyproxy", "-d", "-c", "/etc/tinyproxy/tinyproxy.conf"]
+    mem_limit: 64M
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - $DOCKERDIR/appdata/hermes-egress/tinyproxy.conf:/etc/tinyproxy/tinyproxy.conf:ro
+      - $DOCKERDIR/appdata/hermes-egress/filter:/etc/tinyproxy/filter:ro
+    networks:
+      hermes_net:
+        ipv4_address: 192.168.92.2
