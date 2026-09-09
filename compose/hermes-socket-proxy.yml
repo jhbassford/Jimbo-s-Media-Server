@@ -1,0 +1,42 @@
+services:
+  # Restricted Docker socket proxy for Hermes: read + restart ONLY.
+  # Deliberately separate from the stack's tecnativa socket-proxy, which
+  # filters by path prefix only and cannot express "restart but not delete".
+  hermes-socket-proxy:
+    image: wollomatic/socket-proxy:1.13.1
+    container_name: hermes-socket-proxy
+    restart: unless-stopped
+    user: "65534:0"            # nobody; gid 0 required to read docker.sock (root:root 660)
+    mem_limit: 64M
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - '-loglevel=info'
+      - '-listenip=0.0.0.0'
+      - '-allowfrom=192.168.93.0/24'
+      # Read surface. Patterns are anchored automatically (^...$).
+      - '-allowGET=/(v1\.[0-9]{1,2}/)?version'
+      - '-allowGET=/(v1\.[0-9]{1,2}/)?info'
+      - '-allowGET=/(v1\.[0-9]{1,2}/)?containers/json.*'
+      - '-allowGET=/(v1\.[0-9]{1,2}/)?containers/[a-zA-Z0-9_.-]+/json'
+      - '-allowGET=/(v1\.[0-9]{1,2}/)?containers/[a-zA-Z0-9_.-]+/logs.*'
+      - '-allowGET=/(v1\.[0-9]{1,2}/)?containers/[a-zA-Z0-9_.-]+/stats.*'
+      # The ONLY mutation permitted.
+      - '-allowPOST=/(v1\.[0-9]{1,2}/)?containers/[a-zA-Z0-9_.-]+/restart'
+      # DELETE is never permitted. wollomatic/socket-proxy returns 405 (router-level,
+      # method unconfigured) instead of 403 when no -allowDELETE flag is set at all;
+      # registering an unmatchable pattern keeps DELETE fully blocked on every real
+      # path while making the denial go through the same 403 path-matching logic as
+      # every other verb, for a consistent deny response.
+      - '-allowDELETE=/__hermes_never_matches__'
+      - '-watchdoginterval=3600'
+      - '-stoponwatchdog'
+    # No ports: — reachable only from the hermes_socket network.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      hermes_socket:
+        ipv4_address: 192.168.93.2

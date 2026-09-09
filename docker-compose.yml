@@ -14,6 +14,12 @@ networks:
     ipam:
       config:
         - subnet: 192.168.90.0/24
+  hermes_socket:
+    name: hermes_socket
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.93.0/24
   pihole_network:
     name: pihole_network
     external: true
@@ -52,6 +58,9 @@ include:
   - compose/$HOSTNAME/maintainerr.yml
  # DOWNLOADERS
   - compose/$HOSTNAME/sabnzbd.yml
+
+ # AGENT
+  - compose/hermes-socket-proxy.yml
 
  # THE REST
   - compose/redbot.yml
