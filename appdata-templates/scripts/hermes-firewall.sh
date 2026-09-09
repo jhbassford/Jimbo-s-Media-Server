@@ -38,12 +38,26 @@
 #      iptables -S FORWARD  -> prints DEFAULT_FORWARD's rules (!)
 #      iptables -S DOCKER-USER / INPUT_FIREWALL / DEFAULT_FORWARD -> fine
 #    ...while "iptables-save" shows INPUT, OUTPUT and FORWARD perfectly well.
-#    Custom chains are addressable; built-ins are not. So "-I INPUT 1 -j ..."
-#    is NOT assumed to work here. The script TRIES it, verifies the result with
-#    iptables-save (which is authoritative), and falls back to INPUT_FIREWALL -
-#    the single custom chain that INPUT unconditionally jumps to:
-#      -A INPUT -j INPUT_FIREWALL
+#    Custom chains are addressable; built-ins are not.
 #    Verify listings with "iptables-save", never with "iptables -L INPUT".
+# 4. WORSE, AND MEASURED THE HARD WAY: DELETE ON A BUILT-IN CHAIN RETURNS 0
+#    UNCONDITIONALLY. On this host, with no such rule present anywhere:
+#      iptables -C INPUT -j HERMES-CONTAIN  -> rc=1 "Bad rule"     (correct)
+#      iptables -D INPUT -j HERMES-CONTAIN  -> rc=0                (LIES)
+#    An earlier version of this script wrapped that delete in the usual
+#    "while iptables -D ...; do :; done" dedupe idiom. Because the delete always
+#    reports success, THE LOOP NEVER TERMINATES - it hung the deploy until the
+#    session was killed, leaving the policy chain built but unhooked on the host
+#    side. Never loop on -D against a built-in chain here, and never trust its
+#    exit status for anything.
+#    Consequence: we do not touch INPUT at all. A rule inserted there might also
+#    not be removable, which is a worse failure than not inserting it. We hook
+#    INPUT_FIREWALL instead - a CUSTOM chain, so -C and -D behave correctly
+#    (both verified rc=1 when the rule is absent) - and it is the single chain
+#    INPUT unconditionally jumps to:
+#      -A INPUT -j INPUT_FIREWALL          (the only rule in INPUT)
+#    so hooking it at position 1 sees all host-bound traffic, ahead of its own
+#    "-i lo -j ACCEPT" and "--state RELATED,ESTABLISHED -j ACCEPT".
 #
 # =============================================================================
 # WHY AN INPUT COMPANION IS REQUIRED (review finding I1)
@@ -65,13 +79,25 @@
 # host. This chain drops ALL host-bound traffic from the agent's IPs, so the
 # address it picks does not matter.
 #
-# DNS IS NOT AFFECTED. Docker's embedded resolver at 127.0.0.11 lives inside
-# the container's own network namespace; the container's queries never leave it
-# as packets from a hermes IP. dockerd forwards them upstream from the HOST's
-# namespace with the host's own source address, so they never match any rule
-# here. Confirm after applying with:
-#   docker run --rm --network container:hermes curlimages/curl:8.8.0 \
-#     sh -c 'nslookup openrouter.ai || echo DNS-BROKEN'
+# EXTERNAL DNS FROM THE AGENT IS BLOCKED, AND THAT IS DELIBERATE.
+# An earlier revision of this comment claimed DNS was unaffected. That was
+# WRONG, and measured to be wrong: from inside the container, "nslookup
+# openrouter.ai" fails once these rules are applied. Docker's embedded resolver
+# at 127.0.0.11 answers container NAMES locally (that still works - verified),
+# but for external names dockerd forwards the query from inside the container's
+# own network namespace, so the packet carries a hermes source IP and hits the
+# DROP below.
+#
+# Nothing needs it, and blocking it is a security WIN rather than a cost:
+#   - The agent reaches the internet only through the Tinyproxy at a BARE IP
+#     (192.168.92.2:8888), and Tinyproxy does the name resolution itself. Proven
+#     end to end: "curl -x 192.168.92.2:8888 https://openrouter.ai/..." -> 200.
+#   - Internal service discovery is unaffected: nslookup hermes-egress-proxy
+#     still returns 192.168.92.2.
+#   - DNS tunnelling is a classic exfiltration channel that a DOMAIN allowlist
+#     cannot see at all. Denying the agent its own resolver closes it outright.
+# Confirm the intended state (DNS-BROKEN here is the PASS condition):
+#   docker run --rm --network container:hermes curlimages/curl:8.8.0 #     sh -c 'nslookup openrouter.ai >/dev/null 2>&1 && echo DNS-OK || echo DNS-BROKEN'
 #
 # =============================================================================
 # IDEMPOTENCY (review finding I2)
@@ -106,6 +132,15 @@
 set -u
 
 IPT=/usr/bin/iptables
+# Absolute, and checked below. iptables-save is load-bearing: it is the ONLY
+# authoritative way to see the built-in chains on this host (quirk 3), and it
+# decides which hook branch we take. If it were merely unresolvable on the DSM
+# scheduler's PATH, the verification greps would silently return nothing and the
+# script would conflate "cannot verify" with "hook did not take" - aborting on a
+# host that is actually fine, every hour, until the operator learns to ignore the
+# one alarm that matters.
+IPTSAVE=/usr/bin/iptables-save
+GREP=/usr/bin/grep
 CHAIN=HERMES-CONTAIN
 TAG=hermes-firewall
 
@@ -129,6 +164,8 @@ die() { log "ABORT: $*"; exit 1; }
 
 [ "$(id -u)" = "0" ] || die "must run as root"
 [ -x "$IPT" ] || die "no iptables at $IPT"
+[ -x "$GREP" ] || die "no grep at $GREP"
+[ -x "$IPTSAVE" ] || die "no iptables-save at $IPTSAVE (needed to verify built-in chains)"
 
 # --- Was containment actually in place before this run? ----------------------
 # Reported loudly, because the whole point of the hourly re-apply is to make a
@@ -137,7 +174,7 @@ was_present=1
 $IPT -S "$CHAIN"                >/dev/null 2>&1 || was_present=0
 $IPT -C DOCKER-USER -j "$CHAIN" >/dev/null 2>&1 || was_present=0
 # iptables-save is authoritative here; see host quirk 3.
-iptables-save -t filter 2>/dev/null | grep -qE "^-A (INPUT|INPUT_FIREWALL) -j $CHAIN\$" || was_present=0
+$IPTSAVE -t filter 2>/dev/null | $GREP -qE "^-A INPUT_FIREWALL -j $CHAIN\$" || was_present=0
 
 # --- Build the policy chain --------------------------------------------------
 $IPT -N "$CHAIN" 2>/dev/null   # already exists on a re-run; not an error
@@ -177,33 +214,44 @@ for ip in $HERMES_IPS; do
 done
 
 # --- Hook 1: container -> anywhere-but-the-host (FORWARD path) ---------------
-# Deleting by FULL rule spec genuinely deletes (unlike the old comment-only
-# loop), so this is safe to run repeatedly and always lands at position 1.
-while $IPT -D DOCKER-USER -j "$CHAIN" 2>/dev/null; do :; done
+# DOCKER-USER is a CUSTOM chain, so -C and -D are trustworthy here. The loop is
+# still bounded: an unbounded "while -D" is what hung this script once already,
+# and a bound costs nothing.
+i=0
+while [ $i -lt 20 ] && $IPT -C DOCKER-USER -j "$CHAIN" 2>/dev/null; do
+	$IPT -D DOCKER-USER -j "$CHAIN" 2>/dev/null || break
+	i=$((i + 1))
+done
 $IPT -I DOCKER-USER 1 -j "$CHAIN" || die "cannot hook DOCKER-USER"
 
 # --- Hook 2: container -> the HOST itself (INPUT path) -----------------------
-# Try the built-in INPUT chain first, then verify with iptables-save, because
-# on this host iptables can fail to address built-ins by name (quirk 3) and
-# some failure modes are quiet.
-host_hook=""
-while $IPT -D INPUT -j "$CHAIN" 2>/dev/null; do :; done
-if $IPT -I INPUT 1 -j "$CHAIN" 2>/dev/null &&
-	iptables-save -t filter 2>/dev/null | grep -qE "^-A INPUT -j $CHAIN\$"; then
-	host_hook=INPUT
-else
-	# Fallback: INPUT_FIREWALL is a custom chain (therefore addressable) and is
-	# the only rule in INPUT: "-A INPUT -j INPUT_FIREWALL". Inserting at
-	# position 1 places us ahead of its "-i lo -j ACCEPT" and its
-	# RELATED,ESTABLISHED accept; our own chain starts with a conntrack RETURN,
-	# so established flows are still honoured.
-	# CAVEAT: DSM rebuilds INPUT_FIREWALL whenever the Synology firewall
-	# configuration changes. That is precisely what the hourly re-apply covers.
-	while $IPT -D INPUT_FIREWALL -j "$CHAIN" 2>/dev/null; do :; done
-	$IPT -I INPUT_FIREWALL 1 -j "$CHAIN" || die "cannot hook INPUT or INPUT_FIREWALL"
-	iptables-save -t filter 2>/dev/null | grep -qE "^-A INPUT_FIREWALL -j $CHAIN\$" \
-		|| die "INPUT_FIREWALL hook did not take"
-	host_hook=INPUT_FIREWALL
+# INPUT_FIREWALL, never INPUT - see host quirk 4. This is not a fallback; it is
+# the only safe option on this host.
+$IPTSAVE -t filter 2>/dev/null | $GREP -qE "^-A INPUT -j INPUT_FIREWALL\$" 	|| die "INPUT does not jump to INPUT_FIREWALL; host firewall layout changed - STOP and re-derive the hook"
+
+i=0
+while [ $i -lt 20 ] && $IPT -C INPUT_FIREWALL -j "$CHAIN" 2>/dev/null; do
+	$IPT -D INPUT_FIREWALL -j "$CHAIN" 2>/dev/null || break
+	i=$((i + 1))
+done
+$IPT -I INPUT_FIREWALL 1 -j "$CHAIN" || die "cannot hook INPUT_FIREWALL"
+$IPTSAVE -t filter 2>/dev/null | $GREP -qE "^-A INPUT_FIREWALL -j $CHAIN\$" 	|| die "INPUT_FIREWALL hook did not take"
+host_hook=INPUT_FIREWALL
+
+# --- Duplicate-jump guard (residual of review finding I2) --------------------
+# "iptables -D" is itself a LOOKUP, and lookups on built-in chains are exactly
+# what fails on this host (quirk 3). So "-I INPUT 1" can succeed while the
+# matching "-D INPUT" deletes nothing - and the hourly task would then prepend a
+# fresh jump every hour, forever, reintroducing the non-idempotency I2 was about,
+# just moved from DOCKER-USER to INPUT.
+#
+# Counting the rules INSIDE $CHAIN cannot see this: that chain is flush-and-
+# refilled and is always stable. Only the JUMP count reveals it.
+jumps=$($IPTSAVE -t filter 2>/dev/null | $GREP -c -- "-j $CHAIN\$")
+if [ "$jumps" -gt 2 ]; then
+	log "WARNING: $jumps jumps to $CHAIN, expected 2 (DOCKER-USER + $host_hook)."
+	log "WARNING: a delete is not taking effect; duplicates accumulate each run."
+	log "WARNING: inspect with: $IPTSAVE -t filter | $GREP -- '-j $CHAIN'"
 fi
 
 # --- Report ------------------------------------------------------------------
@@ -211,7 +259,15 @@ if [ "$was_present" = "0" ]; then
 	log "CONTAINMENT WAS MISSING - rules were not in place before this run."
 	log "CONTAINMENT WAS MISSING - if the agent was running, it was uncontained."
 	log "CONTAINMENT WAS MISSING - check for a docker restart or a compose down/up."
+	# Rule 1 of $CHAIN is an unconditional ESTABLISHED,RELATED RETURN, so any
+	# connection the agent opened DURING the gap survives this repair
+	# indefinitely - restoring the rules does not sever it. conntrack(8) is not
+	# installed on this DSM, so the way to drop those flows is to destroy the
+	# container's network namespace:
+	log "CONTAINMENT WAS MISSING - RESTART HERMES. Restoring rules does NOT cut"
+	log "CONTAINMENT WAS MISSING - flows opened during the gap (conntrack absent):"
+	log "CONTAINMENT WAS MISSING -   sudo /usr/local/bin/docker restart hermes"
 fi
-log "applied: $(iptables-save -t filter | grep -c "^-A $CHAIN ") rules in $CHAIN; hooks: DOCKER-USER + $host_hook"
+log "applied: $($IPTSAVE -t filter | $GREP -c "^-A $CHAIN ") rules in $CHAIN; hooks: DOCKER-USER + $host_hook"
 log "audit with: iptables -S $CHAIN   (do NOT use iptables -L INPUT on this host)"
 exit 0
