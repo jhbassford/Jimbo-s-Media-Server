@@ -68,6 +68,7 @@ include:
  # AGENT
   - compose/hermes-socket-proxy.yml
   - compose/hermes-egress-proxy.yml
+  - compose/hermes.yml
 
  # THE REST
   - compose/redbot.yml

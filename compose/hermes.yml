@@ -1,0 +1,157 @@
+services:
+  # Hermes agent gateway. THIS CONTAINER IS THE SANDBOX — DSM 4.4.302 has no
+  # cgroup v2 and no rootless docker, so there is no nested sandbox available;
+  # every hardening control below is the real boundary between a
+  # prompt-injected agent and the NAS, not defense-in-depth on top of one.
+  #
+  # Reachable ONLY as http://hermes:9119 from t3_proxy (Traefik) — no ports:
+  # published, not even loopback. Its only two other network paths are the
+  # RESTRICTED docker-socket proxy (hermes_socket, Task 1: read + restart
+  # only) and the domain-allowlisting egress proxy (hermes_net, Task 2:
+  # default-deny, CONNECT restricted to :443). It is never attached to
+  # socket_proxy (the permissive proxy serving traefik/portainer/dozzle).
+  #
+  # HERMES_ALLOW_ROOT_GATEWAY is deliberately UNSET — do not add it.
+  # No com.centurylinklabs.watchtower.enable label — deliberate, no
+  # auto-update; the image is pinned by digest below and bumped by hand.
+  # Dashboard auth credentials are NOT set here — they are secrets, added in
+  # Task 6 via the NAS-side .env, which push.sh does not sync. Until then
+  # this container boots and idles waiting for configuration; that is
+  # expected, not a defect.
+  #
+  # Three deviations from the brief's literal YAML, all forced by this exact
+  # pinned image's s6-overlay v3 bootstrap, verified with `docker logs` /
+  # source inspection of /opt/hermes/docker/stage2-hook.sh, not guessed —
+  # see task-3-report.md "Deviations" for the full investigation:
+  #
+  #   1. `cpus: 2.0` is dropped. This DSM kernel has NO CFS bandwidth control
+  #      at all (`docker info` on the host prints "WARNING: No cpu cfs quota
+  #      support" / "WARNING: No cpu cfs period support"; `/proc/cgroups` on
+  #      the host has no working cpu.cfs_period/quota). Setting `cpus:` maps
+  #      to `--cpus`/NanoCPUs, which needs exactly that kernel feature;
+  #      `docker compose up` refuses outright with "NanoCPUs can not be set,
+  #      as your kernel does not support CPU CFS scheduler or the cgroup is
+  #      not mounted" before the container is even created. Not a writable
+  #      path issue — no tmpfs/bind-mount fixes a kernel that lacks a
+  #      scheduler feature. mem_limit and pids_limit use cgroup v1
+  #      subsystems (memory) that ARE present; only `pids_limit` deviates
+  #      further (see #2).
+  #
+  #   2. `pids_limit: 512` is KEPT in this file (documents the intended cap)
+  #      but is NOT enforced by this kernel. `docker compose up` prints
+  #      "Your kernel does not support PIDs limit capabilities or the cgroup
+  #      is not mounted. PIDs limit discarded." and `docker inspect`
+  #      confirms `HostConfig.PidsLimit` reads back `<nil>`, not `512`. Root
+  #      cause: `/proc/cgroups` on this host has no `pids` line at all — the
+  #      DSM kernel was never built with CONFIG_CGROUP_PIDS. Exactly the same
+  #      category of gap as #1 (an absent kernel subsystem, not a missing
+  #      mount), so there is no tmpfs/config fix available.
+  #
+  #   3. `/run` is a real bind mount (host dir, NOT tmpfs), and `/etc/passwd`
+  #      + `/etc/group` are read-only bind mounts of edited copies of the
+  #      image's own files (checked in at appdata-templates/hermes/passwd
+  #      and .../group — copy to $DOCKERDIR/appdata/hermes-etc/ verbatim on
+  #      any rebuild). Two independent, stacked failures forced this,
+  #      neither fixable by dropping read_only or cap_drop:
+  #        a) s6-overlay v3 (this image's PID 1) execs a binary it places at
+  #           /run/s6/basedir/bin/init during boot. Docker hardcodes
+  #           noexec,nosuid,nodev on EVERY tmpfs mount it creates — this is
+  #           not overridable via `tmpfs:`/`--tmpfs`/`--mount type=tmpfs`
+  #           options (confirmed: passing extra options like uid=/gid=/mode=
+  #           is honored, but noexec is always still present in `mount`
+  #           inside the container regardless). A tmpfs `/run` therefore
+  #           always makes the exec fail ("Permission denied"), and the
+  #           image's own preinit script explicitly documents the two fixes
+  #           for this — "pre-mount /run with the exec option, or ... give
+  #           this container the CAP_SYS_ADMIN capability so s6-overlay can
+  #           fix it at run time" — CAP_SYS_ADMIN is far too broad a
+  #           capability to restore under cap_drop: ALL (near-root), so a
+  #           real bind-mounted host directory (which Docker does NOT force
+  #           noexec on) is the only option that keeps every capability
+  #           dropped. The host dir ($DOCKERDIR/appdata/hermes-run, owned
+  #           1000:10, mode 755) holds only s6's own supervision-tree
+  #           scratch files, never agent-controlled data.
+  #        b) With `user: "1000:10"` set (mandatory — see below) the image's
+  #           own /opt/hermes/docker/stage2-hook.sh rejects the container
+  #           outright: "ERROR: container started with --user 1000 (an
+  #           arbitrary, non-hermes UID). This is not supported... startup
+  #           will fail." The image's ONLY other documented path — start as
+  #           root, pass PUID/PGID, let it usermod its baked-in `hermes`
+  #           account (UID 10000/GID 10000 in this pinned digest) to match —
+  #           needs CAP_SETUID/CAP_SETGID for the internal privilege drop
+  #           (confirmed: fails "unable to set supplementary group list:
+  #           Operation not permitted" under cap_drop: ALL) — a second,
+  #           independent conflict with cap_drop: ALL that no filesystem fix
+  #           solves, since it's a real UID transition, not a file write.
+  #           Root cause of the *rejection* itself, though, IS a plain file
+  #           write: `usermod -u 1000 hermes` needs to lock/write
+  #           /etc/passwd, which fails under read_only: true regardless of
+  #           capabilities (EROFS beats even root). Fix: pre-edit the
+  #           image's own /etc/passwd + /etc/group (extracted with `docker
+  #           cp`, `hermes`'s line changed from `10000:10000` to `1000:10`,
+  #           every other line byte-identical) and bind-mount them `:ro`.
+  #           The container now starts already AT 1000:10 — the stage2 check
+  #           passes because `id -u hermes` now reads 1000, so it's no
+  #           longer "arbitrary" — and no privilege transition of any kind
+  #           is ever attempted, so CAP_SETUID/CAP_SETGID are never needed.
+  #           Verified with `docker exec hermes ps aux`: every process,
+  #           including the actual gateway (`hermes gateway run --replace`),
+  #           runs as `hermes` (uid=1000, gid=10). PUID/PGID env vars below
+  #           are kept (now a verified no-op: they already match the
+  #           pre-baked account, so the usermod branch is skipped) purely to
+  #           match the brief and document intent.
+  hermes:
+    # Pinned by digest, resolved 2026-09-09 from nousresearch/hermes-agent:latest
+    # (image id sha256:35df7f00847f, org.opencontainers.image.revision
+    # bbf91b76506d8d0a757fa7217341980b3b2789f0, Created 2026-09-09T11:33:32Z —
+    # no semver label exists upstream, so the git revision above is the only
+    # human-readable version marker tied to this digest). Never substitute
+    # :latest here.
+    image: nousresearch/hermes-agent@sha256:a62824a4ec6fed789346a2019907143b56aa6191d6564519fe62aa1bdc1ebd61
+    container_name: hermes
+    restart: unless-stopped
+    command: gateway run
+    user: "1000:10"
+    read_only: true
+    tmpfs:
+      # s6-overlay needs a writable /tmp for general scratch space; it never
+      # execs anything from here (unlike /run — see deviation 3a above,
+      # which is why /run is a bind mount, not listed here).
+      # noexec,nosuid,nodev + a size cap: this container is the sandbox
+      # boundary, so a writable+executable tmpfs would be a
+      # write-a-binary-then-exec path for a prompt-injected agent.
+      - /tmp:noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 4g
+    # cpus: 2.0 omitted — see deviation 1 above (no CFS bandwidth control on
+    # this kernel at all; docker refuses to create the container with it set).
+    pids_limit: 512   # requested; NOT enforced on this kernel — see deviation 2 above.
+    # NO ports: — reachable only via Traefik on t3_proxy, and Traefik itself
+    # only proxies to http://hermes:9119 over the docker network.
+    volumes:
+      - $DOCKERDIR/appdata/hermes:/opt/data
+      - /volume1/code:/opt/code
+      - $DOCKERDIR/appdata/hermes-run:/run
+      - $DOCKERDIR/appdata/hermes-etc/passwd:/etc/passwd:ro
+      - $DOCKERDIR/appdata/hermes-etc/group:/etc/group:ro
+    environment:
+      PUID: 1000
+      PGID: 10
+      TZ: $TZ
+      HERMES_DASHBOARD: 1
+      HERMES_DASHBOARD_HOST: 0.0.0.0        # container-internal only; no host port is published
+      HERMES_DASHBOARD_PORT: 9119
+      HTTP_PROXY: http://192.168.92.2:8888
+      HTTPS_PROXY: http://192.168.92.2:8888
+      NO_PROXY: 192.168.90.0/24,192.168.92.0/24,192.168.93.0/24,localhost,127.0.0.1
+      DOCKER_HOST: tcp://192.168.93.2:2375
+    networks:
+      t3_proxy:
+        ipv4_address: 192.168.90.10
+      hermes_net:
+        ipv4_address: 192.168.92.10
+      hermes_socket:
+        ipv4_address: 192.168.93.10
