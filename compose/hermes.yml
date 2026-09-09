@@ -19,10 +19,11 @@ services:
   # this container boots and idles waiting for configuration; that is
   # expected, not a defect.
   #
-  # Three deviations from the brief's literal YAML, all forced by this exact
-  # pinned image's s6-overlay v3 bootstrap, verified with `docker logs` /
-  # source inspection of /opt/hermes/docker/stage2-hook.sh, not guessed —
-  # see task-3-report.md "Deviations" for the full investigation:
+  # Deviations from the brief's literal YAML, all forced by this exact
+  # pinned image's s6-overlay v3 bootstrap and this NAS's cgroup-v1-only
+  # kernel, verified with `docker logs` / source inspection of
+  # /opt/hermes/docker/stage2-hook.sh / direct `docker inspect` readback —
+  # not guessed. See task-3-report.md for the full investigation.
   #
   #   1. `cpus: 2.0` is dropped. This DSM kernel has NO CFS bandwidth control
   #      at all (`docker info` on the host prints "WARNING: No cpu cfs quota
@@ -33,73 +34,107 @@ services:
   #      as your kernel does not support CPU CFS scheduler or the cgroup is
   #      not mounted" before the container is even created. Not a writable
   #      path issue — no tmpfs/bind-mount fixes a kernel that lacks a
-  #      scheduler feature. mem_limit and pids_limit use cgroup v1
-  #      subsystems (memory) that ARE present; only `pids_limit` deviates
-  #      further (see #2).
+  #      scheduler feature.
+  #      COMPENSATING CONTROL: `cpu_shares: 512` below. The `cpu` cgroup v1
+  #      subsystem IS mounted on this host (`cpu.shares` comes from
+  #      CONFIG_FAIR_GROUP_SCHED, a different kernel config symbol than the
+  #      CFS-bandwidth one that's missing) — confirmed live:
+  #      `cat /sys/fs/cgroup/cpu/cpu.shares` inside a test container reads
+  #      back `512`. This does NOT cap absolute CPU (no substitute for
+  #      `cpus:` — an idle host still lets Hermes use all 4 cores), but it
+  #      is the difference between Hermes losing the scheduler fight under
+  #      contention vs. being able to starve Plex/Traefik/the *arr stack.
   #
-  #   2. `pids_limit: 512` is KEPT in this file (documents the intended cap)
-  #      but is NOT enforced by this kernel. `docker compose up` prints
-  #      "Your kernel does not support PIDs limit capabilities or the cgroup
-  #      is not mounted. PIDs limit discarded." and `docker inspect`
-  #      confirms `HostConfig.PidsLimit` reads back `<nil>`, not `512`. Root
-  #      cause: `/proc/cgroups` on this host has no `pids` line at all — the
-  #      DSM kernel was never built with CONFIG_CGROUP_PIDS. Exactly the same
-  #      category of gap as #1 (an absent kernel subsystem, not a missing
-  #      mount), so there is no tmpfs/config fix available.
+  #   2. `pids_limit: 512` is KEPT (documents intent, brief-literal) but is
+  #      NOT enforced: `docker compose up` prints "Your kernel does not
+  #      support PIDs limit capabilities or the cgroup is not mounted. PIDs
+  #      limit discarded.", and `docker inspect`'s `HostConfig.PidsLimit`
+  #      reads back `<nil>`. Root cause: `/proc/cgroups` on the host has no
+  #      `pids` line at all — CONFIG_CGROUP_PIDS was never built into this
+  #      kernel. Same category as #1: an absent kernel subsystem, not a
+  #      missing mount.
+  #      COMPENSATING CONTROL: `ulimits: nproc` below. RLIMIT_NPROC is a
+  #      POSIX rlimit enforced in the kernel's copy_process() with NO cgroup
+  #      dependency at all — confirmed live via `docker exec ... cat
+  #      /proc/self/limits` showing "Max processes 1024 1024" genuinely
+  #      applied. It is effective here specifically because the usual
+  #      escape hatches are closed: RLIMIT_NPROC is not enforced for UID 0
+  #      (irrelevant — Hermes never runs as root) and raising your own hard
+  #      limit needs CAP_SYS_RESOURCE, which cap_drop: ALL removes and
+  #      no-new-privileges:true keeps removed.
+  #      CAVEAT: RLIMIT_NPROC counts processes per real UID SYSTEM-WIDE, not
+  #      per-container. Checked on this host: the rest of the stack
+  #      (radarr/sonarr/sabnzbd/bazarr/tautulli) runs as PUID=$PUID, which
+  #      resolves to 1026 on this NAS's .env — a DIFFERENT UID from
+  #      Hermes's 1000 — and no other container on this host is pinned to
+  #      UID 1000 (`docker inspect --format '{{.Config.User}}'` checked
+  #      across every running container). So today this ceiling is
+  #      exclusive to Hermes, not shared — 1024 is chosen generously anyway
+  #      in case that ever changes, not because it's currently contended.
+  #      `ulimits: nofile: 4096` is added alongside it for the same
+  #      cgroup-free-enforcement reason, sized to the LinuxServer.io-style
+  #      defaults used elsewhere in this stack.
   #
-  #   3. `/run` is a real bind mount (host dir, NOT tmpfs), and `/etc/passwd`
-  #      + `/etc/group` are read-only bind mounts of edited copies of the
-  #      image's own files (checked in at appdata-templates/hermes/passwd
-  #      and .../group — copy to $DOCKERDIR/appdata/hermes-etc/ verbatim on
-  #      any rebuild). Two independent, stacked failures forced this,
-  #      neither fixable by dropping read_only or cap_drop:
-  #        a) s6-overlay v3 (this image's PID 1) execs a binary it places at
-  #           /run/s6/basedir/bin/init during boot. Docker hardcodes
-  #           noexec,nosuid,nodev on EVERY tmpfs mount it creates — this is
-  #           not overridable via `tmpfs:`/`--tmpfs`/`--mount type=tmpfs`
-  #           options (confirmed: passing extra options like uid=/gid=/mode=
-  #           is honored, but noexec is always still present in `mount`
-  #           inside the container regardless). A tmpfs `/run` therefore
-  #           always makes the exec fail ("Permission denied"), and the
-  #           image's own preinit script explicitly documents the two fixes
-  #           for this — "pre-mount /run with the exec option, or ... give
-  #           this container the CAP_SYS_ADMIN capability so s6-overlay can
-  #           fix it at run time" — CAP_SYS_ADMIN is far too broad a
-  #           capability to restore under cap_drop: ALL (near-root), so a
-  #           real bind-mounted host directory (which Docker does NOT force
-  #           noexec on) is the only option that keeps every capability
-  #           dropped. The host dir ($DOCKERDIR/appdata/hermes-run, owned
-  #           1000:10, mode 755) holds only s6's own supervision-tree
-  #           scratch files, never agent-controlled data.
-  #        b) With `user: "1000:10"` set (mandatory — see below) the image's
-  #           own /opt/hermes/docker/stage2-hook.sh rejects the container
-  #           outright: "ERROR: container started with --user 1000 (an
-  #           arbitrary, non-hermes UID). This is not supported... startup
-  #           will fail." The image's ONLY other documented path — start as
-  #           root, pass PUID/PGID, let it usermod its baked-in `hermes`
-  #           account (UID 10000/GID 10000 in this pinned digest) to match —
-  #           needs CAP_SETUID/CAP_SETGID for the internal privilege drop
-  #           (confirmed: fails "unable to set supplementary group list:
-  #           Operation not permitted" under cap_drop: ALL) — a second,
-  #           independent conflict with cap_drop: ALL that no filesystem fix
-  #           solves, since it's a real UID transition, not a file write.
-  #           Root cause of the *rejection* itself, though, IS a plain file
-  #           write: `usermod -u 1000 hermes` needs to lock/write
-  #           /etc/passwd, which fails under read_only: true regardless of
-  #           capabilities (EROFS beats even root). Fix: pre-edit the
-  #           image's own /etc/passwd + /etc/group (extracted with `docker
-  #           cp`, `hermes`'s line changed from `10000:10000` to `1000:10`,
-  #           every other line byte-identical) and bind-mount them `:ro`.
-  #           The container now starts already AT 1000:10 — the stage2 check
-  #           passes because `id -u hermes` now reads 1000, so it's no
-  #           longer "arbitrary" — and no privilege transition of any kind
-  #           is ever attempted, so CAP_SETUID/CAP_SETGID are never needed.
-  #           Verified with `docker exec hermes ps aux`: every process,
-  #           including the actual gateway (`hermes gateway run --replace`),
-  #           runs as `hermes` (uid=1000, gid=10). PUID/PGID env vars below
-  #           are kept (now a verified no-op: they already match the
-  #           pre-baked account, so the usermod branch is skipped) purely to
-  #           match the brief and document intent.
+  #   3. `memswap_limit: 4g` is added next to `mem_limit: 4g` — without it
+  #      Docker defaults memory-swap to 2x memory, silently doubling the
+  #      real budget to 4 GB RAM + 4 GB swap. Confirmed via `docker inspect`
+  #      that both `Memory` and `MemorySwap` read back identically as
+  #      4294967296 (i.e. zero swap headroom beyond the RAM limit). No
+  #      "kernel does not support swap limit" warning was printed on this
+  #      host (unlike #1/#2) — this kernel's memory cgroup does carry swap
+  #      accounting.
+  #
+  #   4. `/run` is a tmpfs with the explicit `exec` mount option (see the
+  #      volumes/tmpfs entries below), NOT the default Docker tmpfs
+  #      behaviour. s6-overlay v3 (this image's PID 1) execs a binary it
+  #      places at /run/s6/basedir/bin/init during boot. Docker PREPENDS
+  #      noexec,nosuid,nodev to every tmpfs mount and appends user-supplied
+  #      options after; `exec` in the user options is what explicitly
+  #      clears the MS_NOEXEC flag runc's mount-option parser applied —
+  #      merely omitting `noexec` does nothing (that was tried first and
+  #      failed identically both times: `--tmpfs /run:nosuid,nodev,...` and
+  #      `--mount type=tmpfs,destination=/run,...` both still showed
+  #      `noexec` in `mount` inside the container). With `exec` present,
+  #      `mount` shows `rw,nosuid,nodev,relatime` (no noexec) and the same
+  #      script that previously failed with "Permission denied" executing
+  #      /run/s6/basedir/bin/init now runs cleanly — confirmed with a full
+  #      boot to a stable, s6-supervised, non-crash-looping container.
+  #      Because this is genuinely tmpfs (not a bind mount), /run is wiped
+  #      on every container start/restart/recreation — no attacker-planted
+  #      payload at /run/s6/basedir/... (which execs at PID-1 trust level,
+  #      as the same UID 1000 an attacker inside the container would hold)
+  #      can survive past the current boot. An earlier version of this file
+  #      used a host bind mount here instead (a persistent
+  #      $DOCKERDIR/appdata/hermes-run directory) because two earlier tests
+  #      of tmpfs for /run both omitted the `exec` option and were
+  #      incorrectly read as proving tmpfs categorically couldn't work here
+  #      — that state path has been removed; it is no longer part of this
+  #      deployment.
+  #
+  #   5. `user: "1000:10"` itself only works because /etc/passwd + /etc/group
+  #      are read-only bind mounts of edited copies of the image's own
+  #      files (checked in at appdata-templates/hermes/passwd and
+  #      .../group). This image's stage2-hook.sh rejects any `--user` UID
+  #      that isn't `0` or its baked-in `hermes` account's UID (10000 in
+  #      this pinned digest) as "arbitrary" and refuses to start; its
+  #      documented alternative (root + PUID/PGID + internal usermod +
+  #      s6-setuidgid drop) independently needs CAP_SETUID/CAP_SETGID, which
+  #      cap_drop: ALL removes. Pre-editing the `hermes` line in these two
+  #      files from `10000:10000` to `1000:10` (every other line
+  #      byte-identical to the image's originals) means the container
+  #      starts already at 1000:10 with no privilege transition of any kind
+  #      ever attempted — verified via `docker exec hermes ps aux`: every
+  #      process, including the actual gateway, runs as `hermes`
+  #      (uid=1000, gid=10). Both files must be present and correctly owned
+  #      for this to work — see the ownership/mode notes on the volume
+  #      lines below. `appdata-templates/hermes/group` deliberately does
+  #      NOT add its own `hermes:x:10:` line — GID 10 already resolves to
+  #      `uucp` in the image's own /etc/group (both the passwd file's GID
+  #      field and this file's existing `uucp:x:10:` line are sufficient;
+  #      an earlier version of this file added a second, duplicate `10:`
+  #      line, which made `id -gn hermes` / `chown hermes:hermes` a
+  #      coin-flip between "hermes" and "uucp" depending on glibc's NSS
+  #      lookup order — removed).
   hermes:
     # Pinned by digest, resolved 2026-09-09 from nousresearch/hermes-agent:latest
     # (image id sha256:35df7f00847f, org.opencontainers.image.revision
@@ -114,27 +149,49 @@ services:
     user: "1000:10"
     read_only: true
     tmpfs:
-      # s6-overlay needs a writable /tmp for general scratch space; it never
-      # execs anything from here (unlike /run — see deviation 3a above,
-      # which is why /run is a bind mount, not listed here).
-      # noexec,nosuid,nodev + a size cap: this container is the sandbox
-      # boundary, so a writable+executable tmpfs would be a
-      # write-a-binary-then-exec path for a prompt-injected agent.
+      # /tmp: general scratch space; s6-overlay never execs anything from
+      # here (only from /run — see deviation 4 above), so noexec costs
+      # nothing functionally. noexec,nosuid,nodev + a size cap: this
+      # container is the sandbox boundary, so a writable+executable tmpfs
+      # would be a write-a-binary-then-exec path for a prompt-injected agent.
       - /tmp:noexec,nosuid,nodev,size=64m
+      # /run: s6-overlay (PID 1) execs its own generated init binary from
+      # here — the `exec` option is required (see deviation 4 above) and is
+      # a deliberate, narrowly-scoped exception to the noexec-everywhere
+      # policy: it applies ONLY to s6's own supervision-tree scratch files,
+      # which are wiped fresh on every container start/restart (tmpfs, not
+      # a bind mount), so nothing an attacker writes here survives past the
+      # current boot.
+      - /run:exec,nosuid,nodev,size=16m,mode=0755,uid=1000,gid=10
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
     mem_limit: 4g
+    memswap_limit: 4g   # pins memory+swap together; without this Docker defaults swap to 2x memory (see deviation 3 above)
+    cpu_shares: 512      # compensating control for the missing cpus: cap — see deviation 1 above
+    ulimits:
+      nproc: 1024        # compensating control for the missing pids_limit enforcement — see deviation 2 above
+      nofile: 4096
     # cpus: 2.0 omitted — see deviation 1 above (no CFS bandwidth control on
     # this kernel at all; docker refuses to create the container with it set).
-    pids_limit: 512   # requested; NOT enforced on this kernel — see deviation 2 above.
+    pids_limit: 512   # requested; NOT enforced on this kernel — see deviation 2 above; compensated by ulimits.nproc.
     # NO ports: — reachable only via Traefik on t3_proxy, and Traefik itself
     # only proxies to http://hermes:9119 over the docker network.
     volumes:
       - $DOCKERDIR/appdata/hermes:/opt/data
       - /volume1/code:/opt/code
-      - $DOCKERDIR/appdata/hermes-run:/run
+      # $DOCKERDIR/appdata/hermes-etc/{passwd,group}: edited copies of the
+      # image's own /etc/passwd + /etc/group (hermes remapped 10000:10000
+      # -> 1000:10; see deviation 5 above). REQUIRED ownership/mode on the
+      # host: root:root, 0644 — if either file is missing on a rebuild,
+      # Docker auto-creates a root-owned regular file/directory at that
+      # path instead of bind-mounting, which would silently break the
+      # `--user 1000:10` accept-check above (fails closed: the container
+      # would then hit the "arbitrary, non-hermes UID" rejection again, not
+      # a security hole, but a startup failure). Source of truth in git:
+      # appdata-templates/hermes/{passwd,group} — copy both to
+      # $DOCKERDIR/appdata/hermes-etc/ verbatim on any rebuild.
       - $DOCKERDIR/appdata/hermes-etc/passwd:/etc/passwd:ro
       - $DOCKERDIR/appdata/hermes-etc/group:/etc/group:ro
     environment:
