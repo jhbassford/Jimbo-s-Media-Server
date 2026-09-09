@@ -61,11 +61,23 @@ Tunnel ingress is `*.bassford.net` → Traefik at `https://localhost:4443`. Each
 service needs a file rule in `apps.yml` (on the NAS, outside the synced tree) and
 its own CNAME to `<tunnel-id>.cfargotunnel.com`.
 
-**C5 — `push.sh` syncs the whole `compose/` tree.**
-Seven compose files are modified locally and unpushed, including
-`socket-proxy.yml` flipping `privileged: true → false`. Deploying Hermes via
-`push.sh` would carry those changes to the NAS as a side effect. Must be resolved
-deliberately before deployment.
+**C5 — `push.sh` syncs the whole `compose/` tree. (RESOLVED 2026-09-09)**
+`push.sh` tars all of `compose/`, so any local/NAS drift rides along with a
+Hermes deploy. Investigation found the drift ran **NAS-ahead-of-git**, not the
+reverse: git pinned `traefik:3.0` while the NAS runs `3.7`; git still carried the
+stray top-level `networks` block in `maintainerr.yml` that had broken every
+compose command on the NAS; and git had pre-`network_mode: host` versions of
+`plex.yml` and `homeassistant.yml`. Pushing from git would have **regressed the
+NAS** on all four.
+
+Resolved by running `pull.sh` and committing the result, so git now reflects
+deployed state and a Hermes push carries only the new service. Separately, four
+genuinely-new hardening edits (localhost-only binds on `bazarr`, `dozzle`,
+`sabnzbd`, `maintainerr`; `socket-proxy` `privileged: false`) were parked in
+`git stash` — they are unrelated to Hermes and should be reviewed and deployed as
+their own change.
+
+**Standing rule:** always `pull.sh` and reconcile before `push.sh`.
 
 ## 4. Architecture
 
@@ -203,7 +215,8 @@ Success criterion: a **fully hijacked agent** still cannot
 
 ## 7. Open items for implementation
 
-- Choose the dashboard hostname and create its CNAME.
-- Resolve C5 before the first `push.sh`.
+- ~~Choose the dashboard hostname~~ — **`hermes.bassford.net`**. Still needs its
+  CNAME to `<tunnel-id>.cfargotunnel.com` and a Traefik file rule in `apps.yml`.
+- ~~Resolve C5 before the first `push.sh`~~ — done, see C5.
 - Select the forward-proxy implementation for §4.5.
 - Decide which repos `/volume1/code` exposes.
