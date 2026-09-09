@@ -18,20 +18,24 @@ services:
       - '-listenip=0.0.0.0'
       - '-allowfrom=192.168.93.0/24'
       # Read surface. Patterns are anchored automatically (^...$).
+      # Trailing wildcards are confined to "(\?.*)?" (an optional query string)
+      # rather than a bare ".*", so they cannot match across a "/" and admit a
+      # traversal-shaped path such as ".../logs/../../images/json".
       - '-allowGET=/(v1\.[0-9]{1,2}/)?version'
       - '-allowGET=/(v1\.[0-9]{1,2}/)?info'
-      - '-allowGET=/(v1\.[0-9]{1,2}/)?containers/json.*'
+      - '-allowGET=/(v1\.[0-9]{1,2}/)?containers/json(\?.*)?'
       - '-allowGET=/(v1\.[0-9]{1,2}/)?containers/[a-zA-Z0-9_.-]+/json'
-      - '-allowGET=/(v1\.[0-9]{1,2}/)?containers/[a-zA-Z0-9_.-]+/logs.*'
-      - '-allowGET=/(v1\.[0-9]{1,2}/)?containers/[a-zA-Z0-9_.-]+/stats.*'
-      # The ONLY mutation permitted.
-      - '-allowPOST=/(v1\.[0-9]{1,2}/)?containers/[a-zA-Z0-9_.-]+/restart'
-      # DELETE is never permitted. wollomatic/socket-proxy returns 405 (router-level,
-      # method unconfigured) instead of 403 when no -allowDELETE flag is set at all;
-      # registering an unmatchable pattern keeps DELETE fully blocked on every real
-      # path while making the denial go through the same 403 path-matching logic as
-      # every other verb, for a consistent deny response.
-      - '-allowDELETE=/__hermes_never_matches__'
+      - '-allowGET=/(v1\.[0-9]{1,2}/)?containers/[a-zA-Z0-9_.-]+/logs(\?.*)?'
+      - '-allowGET=/(v1\.[0-9]{1,2}/)?containers/[a-zA-Z0-9_.-]+/stats(\?.*)?'
+      # The ONLY mutation permitted. "(\?.*)?" admits a legitimate stop-timeout
+      # query (e.g. "?t=5") without opening up any other path.
+      - '-allowPOST=/(v1\.[0-9]{1,2}/)?containers/[a-zA-Z0-9_.-]+/restart(\?.*)?'
+      # DELETE is intentionally not configured at all (no -allowDELETE flag) —
+      # this states exactly and only what is permitted. wollomatic/socket-proxy
+      # returns 405 for a method with no -allow flag at all (rejected by the
+      # router before path-matching) rather than 403 (rejected by path-matching
+      # on a configured method) — both are conclusive denials; the verification
+      # script accepts either.
       - '-watchdoginterval=3600'
       - '-stoponwatchdog'
     # No ports: — reachable only from the hermes_socket network.
