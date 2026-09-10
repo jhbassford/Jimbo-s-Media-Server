@@ -157,6 +157,22 @@ HERMES_IPS="192.168.94.10 192.168.92.10 192.168.93.10"
 EGRESS_PROXY=192.168.92.2      # Tinyproxy - its one way out
 SOCKET_PROXY=192.168.93.2      # restricted docker socket proxy (read + scoped restart)
 TRAEFIK=192.168.94.254         # Traefik on hermes_ingress (its only peer there)
+GOOGLE_MCP=192.168.92.3        # Google Workspace MCP server (spec 2026-09-10)
+# NOTE: this list is PER-HOST, not per-subnet. The Signal handoff brief and the
+# 2026-09-10 Google spec both claimed "the firewall allows hermes ->
+# 192.168.92.0/24", and that is FALSE - being on the same bridge is not
+# sufficient, because the DROP below catches every destination not named here.
+# Measured: hermes -> 192.168.92.3:8000 TIMED OUT until GOOGLE_MCP was added,
+# while hermes -> 192.168.92.2:8888 answered immediately. Any future container
+# the agent must reach needs its own entry here.
+
+# The Google MCP container's OWN egress. It holds a send-capable Gmail OAuth
+# token, so by the same logic applied to the agent it gets one way out and no
+# other: the googleapis-only Tinyproxy on hermes_google. Both of its addresses
+# are listed because a multi-homed container's choice of source interface is not
+# guaranteed - the same reason HERMES_IPS lists three.
+GOOGLE_MCP_IPS="192.168.92.3 192.168.95.10"
+GOOGLE_EGRESS_PROXY=192.168.95.2
 
 log() {
 	echo "$(date '+%Y-%m-%d %H:%M:%S') [$TAG] $*"
@@ -197,7 +213,7 @@ for ip in $HERMES_IPS; do
 	# when hermes still sat on the shared t3_proxy. That is now fixed properly
 	# at the topology level: the agent is not on t3_proxy at all, so Portainer,
 	# Dozzle and the *arr APIs are unreachable by construction, not by rule.
-	for dst in "$EGRESS_PROXY" "$SOCKET_PROXY" "$TRAEFIK"; do
+	for dst in "$EGRESS_PROXY" "$SOCKET_PROXY" "$TRAEFIK" "$GOOGLE_MCP"; do
 		$IPT -A "$CHAIN" -s "$ip" -d "$dst" -j RETURN \
 			|| die "cannot add RETURN $ip -> $dst"
 	done
@@ -209,6 +225,20 @@ for ip in $HERMES_IPS; do
 	# if this kernel has no LOG target, containment still applies.
 	$IPT -A "$CHAIN" -s "$ip" -m limit --limit 6/min --limit-burst 10 \
 		-j LOG --log-prefix "hermes-drop: " --log-level 4 2>/dev/null \
+		|| log "note: LOG target unavailable, dropping without logging"
+	$IPT -A "$CHAIN" -s "$ip" -j DROP || die "cannot add DROP for $ip"
+done
+
+# --- The Google MCP container: same treatment, one way out -------------------
+# Its allowlist (the googleapis-only Tinyproxy filter) is the POLICY; these
+# rules are the ENFORCEMENT. A library that ignores HTTPS_PROXY does not get
+# out - it fails. Replies to connections it did not initiate (notably Hermes ->
+# MCP) survive on the unconditional ESTABLISHED,RELATED RETURN added above.
+for ip in $GOOGLE_MCP_IPS; do
+	$IPT -A "$CHAIN" -s "$ip" -d "$GOOGLE_EGRESS_PROXY" -j RETURN \
+		|| die "cannot add RETURN $ip -> $GOOGLE_EGRESS_PROXY"
+	$IPT -A "$CHAIN" -s "$ip" -m limit --limit 6/min --limit-burst 10 \
+		-j LOG --log-prefix "gmcp-drop: " --log-level 4 2>/dev/null \
 		|| log "note: LOG target unavailable, dropping without logging"
 	$IPT -A "$CHAIN" -s "$ip" -j DROP || die "cannot add DROP for $ip"
 done

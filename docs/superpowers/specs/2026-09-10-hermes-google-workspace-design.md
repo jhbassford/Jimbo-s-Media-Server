@@ -91,13 +91,28 @@ Hermes' egress is unchanged actually holds.
 `hermes_google` is `192.168.95.0/24`; `.90`–`.94` are already taken by
 `t3_proxy`, `socket_proxy`, `hermes_net`, `hermes_socket` and `hermes_ingress`.
 
-**Hermes' own egress allowlist and `DOCKER-USER` rules are unchanged.** This is
-the central structural win and it is not incidental: because the MCP server is a
-separate container, `*.googleapis.com` never enters Hermes' tinyproxy filter, and
-the Drive-public-share exfiltration path is not merely blocked but **absent** —
-the server never exposes that tool. `hermes → 192.168.92.0/24` is already
-permitted by the firewall, so no firewall change is required either. Same
-reasoning as the Signal integration brief.
+**Hermes' own egress ALLOWLIST is unchanged.** This is the central structural
+win and it is not incidental: because the MCP server is a separate container,
+`*.googleapis.com` never enters Hermes' tinyproxy filter, and the
+Drive-public-share exfiltration path is not merely blocked but **absent** — the
+server never exposes that tool. Verified live 2026-09-10: from inside Hermes,
+`curl -x 192.168.92.2:8888 https://www.googleapis.com/...` fails, while the MCP
+container reaches the same URL through its own proxy with a 200.
+
+**CORRECTION (2026-09-10, measured).** An earlier draft of this paragraph also
+claimed `hermes → 192.168.92.0/24` was already permitted, so **no firewall
+change was required**. That is **false**, and the error was inherited from the
+Signal handoff brief, which states the same thing. `hermes-firewall.sh`
+allowlists **per host, not per subnet**: Hermes may initiate only to
+`192.168.92.2` (its egress proxy), `192.168.93.2` (the socket proxy) and
+`192.168.94.254` (Traefik). Every other destination — including another
+container on its own bridge — hits the `DROP`. Measured: `hermes →
+192.168.92.3:8000` **timed out** until the MCP container was added to that list
+by name, while `hermes → 192.168.92.2:8888` answered immediately.
+
+So a firewall change **is** required: `GOOGLE_MCP=192.168.92.3` joins the
+permitted-destination list. Any future container the agent must reach needs its
+own entry — being on the same bridge is not sufficient.
 
 `hermes-google-egress` is a second tinyproxy instance reusing the existing
 pattern with a googleapis-only filter. As with Hermes itself, the filter is the
