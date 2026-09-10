@@ -11,7 +11,7 @@ services:
       - socket_proxy
       - t3_proxy
     ports:
-      - "8082:8080"
+      - "127.0.0.1:8082:8080" # localhost-only; reach via dozzle.$DOMAINNAME_1 (Traefik basic auth). No native login.
     environment:
       DOZZLE_LEVEL: info
       DOZZLE_TAILSIZE: 300

@@ -10,7 +10,7 @@ services:
     networks:
       - t3_proxy
     ports:
-      - "8084:8080"
+      - "127.0.0.1:8084:8080" # localhost-only; reach via sabnzbd.$DOMAINNAME_1 (Traefik basic auth). No native login.
     volumes:
       - $DOCKERDIR/appdata/sabnzbd:/config
       - $DATADIR/library/downloads:/data/downloads

@@ -10,7 +10,7 @@ services:
     networks:
       - t3_proxy
     ports:
-      - "6767:6767"
+      - "127.0.0.1:6767:6767" # localhost-only; reach via bazarr.$DOMAINNAME_1 (Traefik basic auth). No native login.
     volumes:
       - $DOCKERDIR/appdata/bazarr:/config
       - $DATADIR/library:/data

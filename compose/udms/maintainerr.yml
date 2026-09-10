@@ -8,7 +8,7 @@ services:
     networks:
       - t3_proxy
     ports:
-      - "6246:6246"
+      - "127.0.0.1:6246:6246" # localhost-only; reach via maintainerr.$DOMAINNAME_1 (Traefik basic auth). No native login.
     volumes:
       - $DOCKERDIR/appdata/maintainerr:/opt/data  # dir must be chmod 777 — runs as non-root user
     environment:

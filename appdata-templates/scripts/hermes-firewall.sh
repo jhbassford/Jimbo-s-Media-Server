@@ -120,13 +120,22 @@
 # =============================================================================
 # DSM does not persist iptables rules, AND a Docker package restart or a
 # "docker compose down/up" rebuilds the Docker chains WITHOUT a reboot. A
-# boot-only task therefore silently drops containment while Hermes keeps
-# running. Two DSM Task Scheduler entries are required, both as root:
-#   1. Triggered task, event Boot-up
-#   2. Scheduled task, daily, "repeat every 1 hour"
+# boot-only trigger therefore silently drops containment while Hermes keeps
+# running. Both triggers are provided by the systemd units in
+# appdata-templates/systemd/, installed to /etc/systemd/system on the NAS:
+#   hermes-firewall.service  -- oneshot on boot, ordered After=
+#       pkg-ContainerManager-dockerd.service so DOCKER-USER exists first
+#   hermes-firewall.timer    -- OnBootSec=2min, OnUnitActiveSec=1h, Persistent=true
+# DSM 7 runs systemd 219. The DSM Task Scheduler GUI route was abandoned: it is
+# GUI-only (synoschedtask has no --add) and DSM swallows a non-zero exit unless
+# email notification is ticked, so a failure would be invisible. systemd
+# surfaces status and journals every run instead. Install with systemctl enable
+# and start as SEPARATE commands -- systemd 219 has no `--now`. A DSM major
+# upgrade can remove custom units; re-install and re-check `systemctl is-enabled`.
 # The re-apply is cheap and loud: if the rules were found missing it logs
-# CONTAINMENT WAS MISSING to stdout (captured in the task's own output) and to
-# syslog via logger, so a gap leaves evidence instead of passing silently.
+# CONTAINMENT WAS MISSING to stdout (journal) and to syslog via logger, so a gap
+# leaves evidence instead of passing silently. Check with:
+#   journalctl -u hermes-firewall.service | grep "CONTAINMENT WAS MISSING"
 # =============================================================================
 
 set -u
@@ -168,16 +177,15 @@ GOOGLE_MCP=192.168.92.3        # Google Workspace MCP server (spec 2026-09-10)
 
 # The Google MCP container's OWN egress. It holds a send-capable Gmail OAuth
 # token, so by the same logic applied to the agent it gets one way out and no
-# other: the googleapis-only Tinyproxy on hermes_google. Both of its addresses
-# are listed because a multi-homed container's choice of source interface is not
-# guaranteed - the same reason HERMES_IPS lists three.
-# All THREE addresses, for the same reason HERMES_IPS lists three: a multi-homed
-# container's choice of source interface is not guaranteed. 192.168.94.11 is its
-# hermes_ingress address, present only so Traefik can reach it during OAuth
-# consent. Egress bound to that interface was measured as already failing on
-# routing alone — but "blocked by accident of routing" is not a control, so it
-# is dropped by rule as well.
-GOOGLE_MCP_IPS="192.168.92.3 192.168.95.10 192.168.94.11"
+# other: the googleapis-only Tinyproxy on hermes_google.
+# Both addresses, for the same reason HERMES_IPS lists three: a multi-homed
+# container's choice of source interface is not guaranteed.
+# A third address, 192.168.94.11 on hermes_ingress, was here while Traefik needed
+# to reach the container for OAuth consent. The consent route was removed and the
+# container was detached from hermes_ingress (2026-09-11), so it is gone from the
+# script too -- a rule keyed to an address no container holds is dead weight and
+# makes the policy read as if that surface still exists.
+GOOGLE_MCP_IPS="192.168.92.3 192.168.95.10"
 GOOGLE_EGRESS_PROXY=192.168.95.2
 
 log() {

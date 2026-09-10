@@ -10,7 +10,7 @@ services:
     networks:
       socket_proxy:
         ipv4_address: 192.168.91.254 # You can specify a static IP
-    privileged: true # true for VM. false for unprivileged LXC container on Proxmox.
+    privileged: false # Not needed on Synology/bare Docker. Set true only for VM/privileged-LXC hosts on Proxmox.
     ports:
       - "127.0.0.1:2375:2375" # Do not expose this to the internet with port forwarding
     volumes:
