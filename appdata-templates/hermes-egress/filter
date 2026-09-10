@@ -7,5 +7,6 @@
 ^pypi\.org$
 ^files\.pythonhosted\.org$
 ^api\.telegram\.org$
+^setup\.hermes-agent\.nousresearch\.com$
 ^discord\.com$
 ^gateway\.discord\.gg$
