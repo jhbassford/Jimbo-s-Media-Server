@@ -716,7 +716,26 @@ control that fails open.
 
 ---
 
-### Task 5: Ingress — Traefik route, CNAME, Cloudflare Access
+### Task 5: Ingress
+
+> **AS-BUILT 2026-09-10 — SERVER SIDE DONE.** The Traefik file rule is live in
+> `apps.yml` on the NAS (`hermes-rtr-file` + `hermes-svc-file`, `websecure`,
+> `chain-basic-auth@file`, backend `http://hermes:9119`), and Traefik reloaded it
+> with no errors. Verified with correct SNI from a container on `t3_proxy`:
+> `https://hermes.bassford.net` → **401**, i.e. Traefik's basic-auth challenge is
+> being served. Existing routes unaffected (sonarr 401, dozzle 401, portainer 200).
+> A backup of the previous file is at `apps.yml.bak-pre-hermes`.
+>
+> **REMAINING — needs the operator's Cloudflare login:** the `hermes` CNAME to
+> `<tunnel-id>.cfargotunnel.com` (proxied), the Access application, and the WAF
+> rate-limit rule. Until the CNAME exists the hostname resolves via the DDNS
+> wildcard and returns 522 from outside.
+>
+> Note when testing: `wget`/`curl` against `localhost:443` with only a `Host:`
+> header returns **421 Misdirected Request** — Traefik uses `matchSNItoHost`, so
+> the TLS SNI must match too. Use `--resolve host:443:192.168.90.254`.
+
+ — Traefik route, CNAME, Cloudflare Access
 
 **Files:**
 - Modify (on NAS): `/volume1/docker/appdata/traefik3/rules/udms/apps.yml`
@@ -880,9 +899,6 @@ note the agent must **not** own it:
 
 ```bash
 ssh nas 'umask 077; cat > /tmp/hermes.env <<EOF
-HERMES_DASHBOARD_BASIC_AUTH_USERNAME=jim
-HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=$(openssl rand -base64 24)
-HERMES_DASHBOARD_BASIC_AUTH_SECRET=$(openssl rand -hex 32)
 OPENROUTER_API_KEY=<paste-key-from-step-1>
 EOF
 sudo install -o root -g 10 -m 0640 /tmp/hermes.env /volume1/docker/appdata/hermes-etc/hermes.env
@@ -890,25 +906,45 @@ rm -f /tmp/hermes.env
 ls -l /volume1/docker/appdata/hermes-etc/hermes.env'
 ```
 
-Retrieve the generated password for your password manager:
+The dashboard password is **not** set here — see the next step.
+
+- [ ] **Step 3b: Set the dashboard password (RESOLVED — mechanism verified)**
+
+The plan originally set `HERMES_DASHBOARD_BASIC_AUTH_*` env vars. **Those are not
+read by this image.** Verified 2026-09-10 against digest `a62824a4ec6f`: with no
+auth provider registered the container refuses to bind and prints what it
+actually wants — `dashboard.basic_auth.username` + `dashboard.basic_auth.password_hash`
+in **config.yaml**. It fails *closed*, which is correct, but it means the
+dashboard serves nothing until this is done.
+
+Pick a strong password, store the **plaintext in your password manager only**,
+and generate the hash with the image's own function (confirmed working):
 
 ```bash
-ssh nas 'sudo grep BASIC_AUTH_PASSWORD /volume1/docker/appdata/hermes-etc/hermes.env'
+printf '%s' '<your-password>' | ssh nas 'sudo /usr/local/bin/docker exec -i -u 1000:10 hermes   python -c "import sys
+from plugins.dashboard_auth.basic import hash_password
+print(hash_password(sys.stdin.read().strip()))"'
 ```
 
-> **KNOWN GAP — the dashboard auth provider is NOT configured by these
-> variables.** Observed on this image (digest `a62824a4ec6f`): with
-> `HERMES_DASHBOARD_HOST=0.0.0.0` and no auth provider registered, the container
-> refuses to bind and prints the configuration it actually wants —
-> `dashboard.basic_auth.username` plus `dashboard.basic_auth.password_hash` in
-> **config.yaml**, the hash produced by the image own
-> `plugins.dashboard_auth.basic.hash_password`. The
-> `HERMES_DASHBOARD_BASIC_AUTH_*` environment variables above come from the
-> plan, not from the image. This fails **closed** — an unconfigured dashboard
-> serves nothing — but it means this step as written will not produce a working
-> dashboard. Generate the hash, put it in `hermes-etc/config.yaml`, and keep the
-> env vars only if they turn out to be read. A password *hash* is not a bearer
-> secret, so config.yaml is the right home for it.
+Output looks like `scrypt$16384$8$1$<salt>$<hash>`. Put it in
+`hermes-etc/config.yaml` under `dashboard.basic_auth.password_hash` (the checked-in
+template at `appdata-templates/hermes/config.yaml` already has the block with a
+placeholder), then restart the container.
+
+A scrypt hash is not a bearer secret, so it belongs in `config.yaml` — which is
+root-owned and mounted read-only — rather than in `hermes.env`. Note this also
+means the dashboard credential is one of the §4.7 guardrails the agent cannot
+rewrite.
+
+Verify it took effect — this is the check that distinguishes "auth configured"
+from "still failing closed":
+
+```bash
+ssh nas 'sudo /usr/local/bin/docker exec traefik wget -qS -O /dev/null http://hermes:9119/ 2>&1 | head -3'
+```
+
+Expected: `401 Unauthorized`. **`Connection refused` means the auth provider is
+still not registered** — the dashboard is not listening at all.
 
 - [ ] **Step 4: Write `config.yaml`**
 

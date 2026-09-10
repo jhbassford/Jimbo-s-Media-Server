@@ -82,8 +82,21 @@ dashboard:
   # NEEDS VERIFICATION — no `dashboard:` section exists in the shipped example.
   public_url: "https://hermes.bassford.net"
   trusted_proxies:
-    # Traefik's address on t3_proxy. Bounded — never 0.0.0.0/0.
-    - "192.168.90.254"
+    # Traefik on hermes_ingress (two-member net). Bounded — never 0.0.0.0/0.
+    - "192.168.94.254"
+  # Auth provider — VERIFIED 2026-09-10 from the container's own refusal-to-bind
+  # message. Configured HERE, not via HERMES_DASHBOARD_BASIC_AUTH_* env vars as
+  # the plan originally assumed. Generate the hash with the image's own function
+  # (confirmed working against digest a62824a4ec6f):
+  #   printf '%s' '<password>' | docker exec -i -u 1000:10 hermes python -c   #     "import sys; from plugins.dashboard_auth.basic import hash_password;   #      print(hash_password(sys.stdin.read().strip()))"
+  # Output looks like: scrypt$16384$8$1$<salt>$<hash>
+  # Keep the PLAINTEXT out of git and out of this file — password manager only.
+  # A scrypt hash is not a bearer secret, so the hash belongs here, not in
+  # hermes.env. Until this is set the container fails CLOSED: it refuses to bind
+  # the dashboard at all, which is correct but means no dashboard.
+  basic_auth:
+    username: "jim"
+    password_hash: "<PLACEHOLDER — generate with the command above>"
 
 # messaging: added in plan Task 6, when a channel is first connected. The
 # sender allowlist is the control that keeps the bot from being an open shell,

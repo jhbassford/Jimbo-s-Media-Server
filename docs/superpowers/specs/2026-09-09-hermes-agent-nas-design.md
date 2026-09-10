@@ -161,11 +161,11 @@ Defence in depth, outermost first:
 5. **Hermes' own mandatory dashboard auth** at the origin
    (`HERMES_DASHBOARD_BASIC_AUTH_*`).
 
-Hermes joins `t3_proxy` and publishes **no host ports at all** — not even
+Hermes joins `hermes_ingress` — a two-member network shared only with Traefik, **not** the stack-wide `t3_proxy` — and publishes **no host ports at all** — not even
 loopback. It is unreachable from the LAN; only Traefik can reach it, over the
 Docker network. The API server (8642) is never published.
-`dashboard.trusted_proxies` is bounded to Traefik's `t3_proxy` address; never
-`0.0.0.0/0`.
+`dashboard.trusted_proxies` is bounded to Traefik's `hermes_ingress` address
+(`192.168.94.254`); never `0.0.0.0/0`.
 
 Requires a CNAME for the chosen hostname → `<tunnel-id>.cfargotunnel.com`, per C4.
 
@@ -173,15 +173,28 @@ Requires a CNAME for the chosen hostname → `<tunnel-id>.cfargotunnel.com`, per
 
 Per C3, enforced on the NAS, not the router.
 
-Note that Hermes is attached to **three** networks — `t3_proxy` (ingress from
-Traefik), its own `hermes_net` (egress via the forward proxy) and `hermes_socket`
-(the restricted Docker socket proxy). Filtering must therefore match
-the **container's own source IPs**, not a bridge interface: blocking the
-`t3_proxy` bridge would break every other proxied service on it, and a
-multi-homed container's choice of egress interface is not otherwise guaranteed.
+Note that Hermes is attached to **three** networks — `hermes_ingress` (a
+two-member network shared only with Traefik), its own `hermes_net` (egress via
+the forward proxy) and `hermes_socket` (the restricted Docker socket proxy).
+Filtering must therefore match the **container's own source IPs**, not a bridge
+interface: a multi-homed container's choice of egress interface is not
+guaranteed, and an interface rule would hit every other container on that bridge.
 
 - Hermes is assigned a **static IP on each attached network**.
 - `DOCKER-USER` rules deny direct outbound from those source IPs specifically.
+- **An `INPUT`-side companion is also required, and is not optional.**
+  `DOCKER-USER` is reached only from the `FORWARD` path. Container-to-*host*
+  traffic goes via `INPUT` and never traverses `DOCKER-USER` at all, so without
+  it the agent still reaches Home Assistant on `192.168.1.104:8123` (host
+  networking — full control of the smart-home estate), Portainer on `:9000`,
+  DSM on `:5000/:5001`, sshd, and every Docker bridge gateway address, all of
+  which are the same host. On this NAS the hook must target `INPUT_FIREWALL`,
+  a custom chain, never the built-in `INPUT` — see the script header for why
+  (`iptables -D` on a built-in returns success unconditionally here).
+- **External DNS from the agent is blocked, deliberately.** Tinyproxy resolves
+  on its behalf, internal container names still resolve, and denying the agent
+  its own resolver closes DNS tunnelling — an exfiltration channel a *domain*
+  allowlist cannot see.
 - Traffic is forced through a small domain-allowlisting forward proxy.
 - Allowlist: OpenRouter, the configured messaging platforms, package registries,
   GitHub. Nothing else.
@@ -201,10 +214,23 @@ Three things the router genuinely contributes:
    breaks remote Plex playback, so it is an operator decision rather than an
    automatic removal; it must be consciously kept or dropped, not ignored. UPnP
    must also be confirmed disabled, so a compromised container cannot open its
-   own inbound port.
-2. **Lateral containment.** Zone policy restricting the NAS *as a source* from
-   reaching UDM management and the IoT VLAN (192.168.2.0/24, VLAN 20), so an
-   agent compromise cannot pivot to IoT devices or the router UI.
+   own inbound port. **Verified 2026-09-10: `upnp_enabled: false` and
+   `upnp_nat_pmp_enabled: false`** — already correct, no change needed. SYN
+   cookies are on, ICMP redirects are not accepted, and all conntrack ALG
+   modules are off.
+2. **Lateral containment — worth much less here than this section assumed.**
+   An audit on 2026-09-10 found the IoT VLAN (192.168.2.0/24, VLAN 20) contains
+   exactly **one** client: the Samsung soundbar at `192.168.2.161`. The LG TV,
+   NVIDIA Shield, WiiM Ultra and Pixel Tablet — the devices a "pivot to IoT"
+   actually means — all sit on the main LAN at `192.168.1.0/24`. So a
+   NAS→IoT-VLAN block would protect one speaker while leaving the real smart-home
+   devices untouched, and would likely break Home Assistant's control of that
+   speaker, since HA runs host-networked *on the NAS*.
+   Note also that the **container** is already denied all of this by the NAS-side
+   rules in §4.5, proven by the containment test. A UDM policy here therefore
+   defends only against compromise of the NAS *host itself*, not the agent.
+   The genuinely valuable change is migrating the real IoT devices onto VLAN 20 —
+   a separate project, and a prerequisite for this rule being worth writing.
 3. **Detection.** IDS/IPS and malicious-domain blocking on the Default zone, with
    the NAS's outbound logged so anomalous destinations surface.
 
