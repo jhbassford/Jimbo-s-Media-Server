@@ -164,3 +164,66 @@ blocked, and they are why "Drive read-only" is enforced at two layers here.
 ## Send-gate spike (Task 8)
 
 Result: PENDING.
+
+## Live verification (2026-09-10, against the running container)
+
+**Tool list — 24 tools, matching spec §1 exactly.** Read via a real MCP
+`tools/list` over the streamable-HTTP endpoint, not from source:
+
+```
+draft_gmail_message, get_doc_as_markdown, get_doc_content, get_drive_file_content,
+get_drive_file_permissions, get_events, get_gmail_attachment_content,
+get_gmail_message_content, get_gmail_messages_content_batch, get_gmail_thread_content,
+get_gmail_threads_content_batch, inspect_doc_structure, list_calendars,
+list_docs_in_folder, list_document_comments, list_drive_items, list_gmail_labels,
+manage_event, query_freebusy, search_docs, search_drive_files, search_gmail_messages,
+send_gmail_message, start_google_auth
+```
+
+No `set_drive_file_permissions`, `manage_drive_access`, `get_drive_shareable_link`
+or `check_drive_file_public_access` — the public-link exfiltration path is
+**absent**, as spec §2 requires. No Drive or Docs writers. `list_document_comments`
+was not in the source enumeration above (it lives outside the files grepped) and
+is a read.
+
+**Correction to finding 2.** This record previously claimed `--permissions`
+narrows the requested OAuth scopes. That is only true *inside the configured
+server process*. An ad-hoc `python -` invocation in the same container parses no
+CLI arguments, so `get_current_scopes()` falls back to **every** scope the image
+knows — the first auth URL generated that way requested ~40 scopes including
+`auth/drive` (full write), `script.external_request` and `chat.messages`.
+Consenting to that URL would have granted the exact Drive-write exfiltration path
+this design exists to remove. **Always trigger auth through the `start_google_auth`
+MCP tool against the running server, never by importing `start_auth_flow`.**
+
+**Scopes actually requested (13), and the delta from spec §5:**
+
+| Scope | Spec §5 | Note |
+|---|---|---|
+| `gmail.readonly` | yes | |
+| `gmail.compose` | yes | |
+| `gmail.send` | implied | operator chose send; `compose` already permits it |
+| **`gmail.modify`** | **NO** | over-grant — can modify labels and trash mail |
+| **`gmail.labels`** | **NO** | over-grant — label management |
+| `calendar.events` | yes | |
+| **`calendar`** | **NO** | over-grant — full calendar incl. settings/ACLs |
+| `calendar.readonly` | subset | harmless |
+| `drive.readonly` | yes | |
+| `documents.readonly` | yes | |
+| `userinfo.email`, `userinfo.profile`, `openid` | — | identity, required |
+
+**Cause:** the permission model is level-based and **cumulative**, and coarser
+than spec §5's matrix. `gmail:send` necessarily includes `organize`
+(`gmail.modify` + `gmail.labels`); non-Gmail services offer only `readonly` or
+`full`, so calendar *writes* require the full `calendar` scope. There is no
+setting that expresses "events but not calendar settings" or "send but not
+modify". This is the same class of finding as spec §5's original one — Google's
+and this server's granularity are both coarser than the design wanted.
+
+**Consequence, stated plainly:** Layer 1 (tools) is exact — 24 tools, no writers
+beyond drafts/send/events. Layer 0 (scopes) is **wider than designed**. The gap
+matters only if the token is used outside the tool allowlist, i.e. if the MCP
+container itself were compromised (spec §7.3). It widens §7.3's blast radius from
+"read mail, draft, send, write events" to "also modify labels and trash mail".
+It does **not** widen what a hijacked Hermes can do, because Hermes can only call
+the 24 registered tools and cannot read the token.
