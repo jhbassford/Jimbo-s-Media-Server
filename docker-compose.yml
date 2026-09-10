@@ -101,6 +101,7 @@ include:
   - compose/hermes-socket-proxy.yml
   - compose/hermes-egress-proxy.yml
   - compose/hermes-google-egress.yml
+  - compose/hermes-google-mcp.yml
   - compose/hermes.yml
 
  # THE REST

@@ -1,0 +1,151 @@
+services:
+  # Holds the Google OAuth token. THIS CONTAINER IS THE CREDENTIAL BOUNDARY.
+  # The entire design exists so that /opt/data (Hermes' writable mount) contains
+  # no Google credential and a fully hijacked agent has nothing to steal.
+  # Spec: docs/superpowers/specs/2026-09-10-hermes-google-workspace-design.md
+  # Image facts, all read off the live image: docs/superpowers/verify/google-mcp-image.md
+  #
+  # Reachable from Hermes ONLY as http://192.168.92.3:8000/mcp on hermes_net.
+  # NO ports: published -- see deviation 3 below, where that stops being hygiene
+  # and becomes load-bearing. Its egress goes through hermes-google-egress on
+  # hermes_google, a two-member network Hermes cannot join.
+  #
+  # NO watchtower label -- an auto-updating container holding a send-capable
+  # Gmail token is a supply-chain hole. Bump the digest by hand, then re-run
+  # docs/superpowers/verify/hermes-threat-model.sh, which asserts the live tool
+  # list and fails loudly if an upstream bump reintroduced a writer.
+  #
+  # DEVIATIONS from the plan's Task 4 block. Every one was forced by reading the
+  # actual image; none was guessed. Full evidence in google-mcp-image.md.
+  #
+  #   1. `entrypoint:` is overridden to the venv interpreter directly, and the
+  #      image's own `uv run` is NOT used. Two independent reasons:
+  #      (a) The image entrypoint is `/bin/sh -c` with CMD as a shell STRING.
+  #          A compose `command:` written as a YAML list would be passed as
+  #          `sh -c "<first element>" <rest...>` -- only the first element runs
+  #          and every flag after it is SILENTLY DISCARDED. Overriding the
+  #          entrypoint to a real binary makes the list form behave normally.
+  #      (b) `uv run` re-syncs dependencies from PyPI at every start. Verified
+  #          live with `--network none`: `uv run main.py` FAILS offline
+  #          ("UV-FAILED-OFFLINE") while `/app/.venv/bin/python main.py`
+  #          succeeds ("DIRECT-PYTHON-OK-OFFLINE"). Behind this container's
+  #          googleapis-only egress proxy, `uv run` would never reach pypi.org
+  #          and the container would never start. UV_NO_SYNC=1 also works, but
+  #          invoking the interpreter directly removes uv from the boot path
+  #          entirely rather than depending on its behaviour staying put.
+  #
+  #   2. `--permissions SERVICE:LEVEL` instead of the plan's `--tools` +
+  #      `--tool-tier`. This flag drives BOTH tool registration and the OAuth
+  #      scopes requested, so spec section 5's Layer 0 and Layer 1 move in step
+  #      instead of being maintained separately -- better than the design
+  #      assumed. It is mutually exclusive with `--tools` and `--read-only`.
+  #      Gmail levels are CUMULATIVE (readonly < organize < drafts < send <
+  #      full), so `gmail:send` also grants label/filter mutation that spec
+  #      section 1 excludes; those tools are subtracted by name in
+  #      WORKSPACE_MCP_DISABLED_TOOLS below.
+  #
+  #   3. `WORKSPACE_MCP_HOST: 0.0.0.0` is REQUIRED, and it has a security
+  #      consequence that must not be lost. Without it,
+  #      main.py:resolve_bind_host_for_transport binds 127.0.0.1 whenever
+  #      transport is streamable-http and OAuth 2.1 is off -- Hermes could not
+  #      reach it at all. Setting it triggers the server's own startup notice:
+  #      "Legacy streamable-http mode has no MCP-level auth provider".
+  #      That is accurate: ANYTHING able to reach 192.168.92.3:8000/mcp can use
+  #      the Google tools with NO credential. Accepted, because a hijacked
+  #      Hermes is *supposed* to be able to call this server -- the boundary is
+  #      the tool allowlist and the OAuth scopes, not endpoint auth. The
+  #      compensating controls are that hermes_net has exactly three members
+  #      (Hermes and the two proxies), and that NO HOST PORT IS EVER PUBLISHED
+  #      HERE. The second one is now a security control, not tidiness.
+  #      MCP_ENABLE_OAUTH21 was rejected: it reintroduces the /oauth2/* and
+  #      /.well-known/* surface spec section 8 deliberately avoids.
+  #
+  #   4. `ulimits: nproc: 256`, deliberately small. This image runs as uid 1000
+  #      -- the SAME real UID as Hermes -- and RLIMIT_NPROC counts per real UID
+  #      SYSTEM-WIDE, not per container. compose/hermes.yml deviation 2 noted
+  #      its 1024 ceiling was exclusive to Hermes "in case that ever changes";
+  #      this is that change. Running as a foreign UID was tested and FAILS
+  #      (--user 1055:1055 -> the app cannot initialise, HOME resolves to /),
+  #      which would mean the same /etc/passwd remap Hermes needed. Not worth it
+  #      for a resource-contention issue rather than a containment one, so
+  #      instead this container is capped low enough that it cannot meaningfully
+  #      erode Hermes' headroom.
+  #
+  #   5. `cpus:` and `pids_limit` omitted -- unavailable on this DSM 4.4.302
+  #      kernel. Same reasoning as compose/hermes.yml deviations 1 and 2.
+  hermes-google-mcp:
+    # Pinned by digest, resolved 2026-09-10 on the NAS from tag 1.26.0.
+    # Never substitute the tag. See google-mcp-image.md.
+    image: ghcr.io/taylorwilsdon/google_workspace_mcp@sha256:0ce26298d707ee1e213ca3c51ef814287b8d8c9c2a0abd9494f95f2adc07bc1d
+    container_name: hermes-google-mcp
+    restart: unless-stopped
+    working_dir: /app
+    # See deviation 1 -- do NOT revert this to the image's `uv run` CMD.
+    entrypoint: ["/app/.venv/bin/python", "main.py"]
+    command:
+      - "--single-user"
+      - "--transport"
+      - "streamable-http"
+      - "--permissions"
+      - "gmail:send"
+      - "calendar:full"
+      - "drive:readonly"
+      - "docs:readonly"
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev,size=64m
+      # HOME for uid 1000. read_only: true makes /home/app unwritable, and the
+      # interpreter and google-auth both expect a writable HOME for caches.
+      # noexec: nothing should ever be executed out of it.
+      - /home/app:noexec,nosuid,nodev,size=16m,uid=1000,gid=1000
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    memswap_limit: 1g   # without this Docker silently allows memory + 2x swap
+    cpu_shares: 256
+    ulimits:
+      nproc: 256        # see deviation 4 -- shared UID-1000 ceiling with Hermes
+      nofile: 2048
+    environment:
+      TZ: $TZ
+      WORKSPACE_MCP_PORT: 8000
+      WORKSPACE_MCP_HOST: 0.0.0.0        # REQUIRED -- see deviation 3
+      # Consent callback. The Traefik route for this hostname exists ONLY during
+      # the consent flow and is removed afterwards; token refresh does not need
+      # it, so this container normally has no internet-facing surface at all.
+      WORKSPACE_EXTERNAL_URL: "https://gws.bassford.net"
+      GOOGLE_OAUTH_REDIRECT_URI: "https://gws.bassford.net/oauth2callback"
+      GOOGLE_CLIENT_SECRET_PATH: /config/client_secret.json
+      GOOGLE_MCP_CREDENTIALS_DIR: /credentials
+      # MCP_ENABLE_OAUTH21 deliberately UNSET -- see deviation 3.
+      #
+      # Second lock on top of --permissions. drive:readonly and docs:readonly
+      # should already withhold every writer; these are named anyway so an
+      # upstream permission-model change cannot silently reintroduce them, and
+      # so the threat-model suite has concrete names to assert against.
+      # The four that matter most are set_drive_file_permissions,
+      # manage_drive_access, get_drive_shareable_link and
+      # check_drive_file_public_access: together they are the public-link
+      # exfiltration path spec section 2 requires to be ABSENT, not blocked.
+      WORKSPACE_MCP_DISABLED_TOOLS: "batch_modify_gmail_message_labels,modify_gmail_message_labels,manage_gmail_label,manage_gmail_filter,create_calendar,manage_focus_time,manage_out_of_office,set_drive_file_permissions,manage_drive_access,get_drive_shareable_link,check_drive_file_public_access,get_drive_file_download_url,create_drive_file,create_drive_folder,copy_drive_file,update_drive_file,import_to_google_doc,import_to_google_sheets,import_to_google_slides,create_doc,batch_update_doc,modify_doc_text,find_and_replace_doc,insert_doc_elements,insert_doc_image,create_table_with_data,manage_doc_tab,update_doc_headers_footers,update_paragraph_style,debug_docs_runtime_info,debug_table_structure"
+      # Egress: everything to Google goes through the googleapis-only allowlist
+      # proxy. The DOCKER-USER rules keyed to this container's two source IPs
+      # are the enforcement; this is only the instruction.
+      HTTPS_PROXY: http://192.168.95.2:8888
+      HTTP_PROXY: http://192.168.95.2:8888
+      NO_PROXY: 192.168.92.0/24,192.168.95.0/24,localhost,127.0.0.1
+    volumes:
+      # Credential store -- the OAuth token lands here. Root-owned parent, 0700,
+      # owned by uid 1000 so the app can write it. NEVER mounted into hermes;
+      # that absence is the whole design.
+      - $DOCKERDIR/appdata/hermes-google/credentials:/credentials
+      # client_secret.json, root:root 0400, :ro. Neither the agent nor this
+      # container's own write path can modify it.
+      - $DOCKERDIR/appdata/hermes-google-etc/client_secret.json:/config/client_secret.json:ro
+    networks:
+      hermes_net:
+        ipv4_address: 192.168.92.3
+      hermes_google:
+        ipv4_address: 192.168.95.10
