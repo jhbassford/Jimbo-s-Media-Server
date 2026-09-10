@@ -97,15 +97,33 @@ approvals:
   # already "deny" - pinned here so a future image default-flip cannot silently
   # open them. unattended_mode is the one that matters most: it governs the
   # webhook/API surface, i.e. the messaging path.
-  # manual, NOT smart. smart delegates the risk call to an auxiliary LLM, and on
-  # this deployment the auxiliary lane had NO working backend (nous unauthenticated,
-  # OpenRouter skipped by free_only) - so the classifier smart depends on was simply
-  # absent, and its failure behaviour was not something I could establish from the
-  # source in reasonable time. manual removes the dependency entirely: every flagged
-  # command pauses for a human instead of asking a free model to adjudicate.
-  # Dangerous commands should be rare; if this proves tedious, "smart" is a one-word
-  # revert now that auxiliary has a working free backend below.
-  mode: "manual"
+  # smart (2026-09-10), switched from manual now that the auxiliary lane has a
+  # working backend (auxiliary.approval pins nemotron:free above - without that
+  # pin the guardian has no model and every flagged command escalates).
+  #
+  # The failure behaviour is now established from source, which is what blocked
+  # this before. tools/approval_smart.py:_smart_approve wraps the whole guardian
+  # call in try/except and returns "escalate" on ANY exception (blocked egress,
+  # provider timeout, 402, unparseable answer - anything that is not exactly
+  # APPROVE or DENY). tools/approval.py:_smart_gate then falls through to the
+  # normal manual prompt. So smart FAILS SAFE: the worst case is the manual
+  # behaviour we had before, never an auto-approve. A guardian DENY still allows
+  # an interactive owner to override once (nothing persists); on unattended
+  # platforms it blocks outright.
+  #
+  # An APPROVE applies to that one command only - it never whitelists the
+  # pattern, so a benign `python -c "print()"` cannot suppress review of the next
+  # command in the same detector category.
+  #
+  # The `deny:` globs below are NOT delegated to the guardian - they block first,
+  # as does the built-in hardline blocklist. smart only adjudicates the grey area
+  # (the false positives: -c script execution, benign pipes) that manual mode
+  # made a human answer one at a time.
+  #
+  # `approvals.smart_policy` (empty) appends operator rules to the guardian's
+  # SYSTEM prompt - the trusted channel, never adjacent to the command text.
+  # Use it if a class of command needs forcing to ESCALATE.
+  mode: "smart"
   cron_mode: "deny"
   single_query_mode: "deny"
   unattended_mode: "deny"

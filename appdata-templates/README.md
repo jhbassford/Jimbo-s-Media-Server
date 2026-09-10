@@ -37,6 +37,7 @@ Directories:
 |---|---|---|---|
 | `/volume1/docker/appdata/hermes-etc` | `root:root` | `0755` | read-only mount sources; the agent must never own this |
 | `/volume1/docker/appdata/hermes-bin` | `root:root` | `0755` | read-only tool mount (`/opt/hermes-bin`); see below |
+| `/volume1/docker/appdata/hermes-etc/profile` | `root:root` | `0644` | corrected `/etc/profile` (PATH); see below |
 | `/volume1/docker/appdata/hermes` | `1000:10` | `0700` | the agent's read-write state (`/opt/data`) |
 | `/volume1/docker/appdata/hermes/.cache` | `1000:10` | `0755` | tool caches (uv/pip/npm/XDG); **dotted** — `hermes/cache` is Hermes' own |
 | `/volume1/docker/appdata/hermes/tmp` | `1000:10` | `0755` | `TMPDIR`; keeps large wheels off the 64 MB `/tmp` tmpfs |
@@ -213,9 +214,44 @@ writable mount, so a prompt-injected agent could overwrite its own scanner.
 Pinning `security.tirith_path` to an explicit non-default path disables that
 download entirely. The same argument applies to every future tool — **never
 install a binary the agent will execute into a directory the agent can write.**
-Note `/opt/data/.local/bin` is already on the image's stock `PATH` ahead of
-`/usr/bin`, which is exactly why a second writable `PATH` entry is not worth
-adding.
+`/opt/data/.local/bin` was on the image's stock `PATH` ahead of `/usr/bin` and
+has been **removed** from the container `PATH` (2026-09-10). It is inside the
+agent's writable mount, so it is the same shadowing exposure this ro mount
+exists to close; inheriting it from the image was never a justification. The
+directory does not exist on disk anyway (only `.local/share`, `.local/state`).
+
+### `profile` — corrected `/etc/profile`, root:root 0644
+Mounted read-only at `/etc/profile`. Byte-identical to the image's own file
+except the `PATH` block. The stock block **assigns** `PATH` for non-root UIDs
+(`/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games`), which deleted
+`/opt/hermes/bin`, `/opt/hermes/.venv/bin` and `/opt/hermes-bin` from the
+agent's shell — no `jq`, no `tirith`, and bare `python3` resolving to
+`/usr/bin/python3`, which cannot import `hermes_cli` (it lives in the read-only
+venv at `/opt/hermes/.venv`).
+
+The blast radius was larger than "login shells only" implies.
+`tools/environments/local.py::_run_bash` uses `bash -l` exactly **once** per
+session, for `init_session`'s env snapshot; the result is cached to
+`$HERMES_HOME/tmp/hermes-snap-*.sh` and every later command is a non-login
+`bash -c` that sources it. One wipe at bootstrap was inherited by every command
+for the life of the session. **Consequence for operators: a `PATH` change does
+not reach the agent until a new session, and the cached snapshot survives a
+container recreate — delete `/opt/data/tmp/hermes-snap-*.sh` after changing it.**
+
+The replacement keeps the inherited `PATH` minus any `/opt/data` entry and
+minus duplicates. Restoring it verbatim would have been a regression rather
+than a fix, for the `.local/bin` reason above.
+
+    ssh nas 'sudo install -o root -g root -m 0644 /dev/stdin       /volume1/docker/appdata/hermes-etc/profile' < appdata-templates/hermes/profile
+
+Same failure mode as `passwd`/`group`: if the file is missing at `compose up`,
+Docker creates a **directory** at `/etc/profile` and every login shell in the
+container breaks.
+
+Verify:
+
+    ssh nas 'sudo /usr/local/bin/docker exec hermes bash -lc "echo \$PATH; command -v jq python3"'
+    # expect ...:/opt/hermes-bin, /opt/hermes-bin/jq, /opt/hermes/.venv/bin/python3
 
 Verify each binary against the publisher's own checksum file before installing;
 the install commands above do this for `jq`.

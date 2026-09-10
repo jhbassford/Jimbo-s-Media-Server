@@ -203,6 +203,35 @@ services:
       # $DOCKERDIR/appdata/hermes-etc/ verbatim on any rebuild.
       - $DOCKERDIR/appdata/hermes-etc/passwd:/etc/passwd:ro
       - $DOCKERDIR/appdata/hermes-etc/group:/etc/group:ro
+      # /etc/profile: same pattern as passwd/group above — a root:root 0644
+      # read-only bind mount of the image's own file with ONE block changed.
+      # The stock file ASSIGNS PATH for non-root UIDs
+      # (/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games) instead of
+      # extending it, which silently deleted /opt/hermes/bin,
+      # /opt/hermes/.venv/bin and /opt/hermes-bin from the agent's shell.
+      #
+      # It bit harder than "login shells only" suggests. Hermes runs `bash -l`
+      # exactly ONCE per session — tools/environments/local.py::_run_bash,
+      # `login=True`, for init_session's env snapshot — dumps the result to
+      # $HERMES_HOME/tmp/hermes-snap-*.sh as `declare -x` lines, and then runs
+      # every actual command as a NON-login `bash -c` that sources that
+      # snapshot. So one wipe at session bootstrap was inherited by every
+      # command for the whole session: no jq, no tirith, and bare `python3`
+      # resolving to /usr/bin/python3, which cannot import hermes_cli (that
+      # lives in the read-only venv at /opt/hermes/.venv).
+      #
+      # The replacement keeps the inherited PATH minus any /opt/data entry.
+      # Restoring it verbatim would have been a REGRESSION, not a fix: the
+      # image's stock PATH carries /opt/data/.local/bin — inside the agent's
+      # own writable mount — ahead of /usr/bin, so a prompt-injected agent
+      # would get a directory it can write that shadows /usr/bin. That is the
+      # exact trade putting jq/tirith on the 0555 /opt/hermes-bin mount exists
+      # to avoid. Caught in review by the agent itself.
+      # Source of truth: appdata-templates/hermes/profile. REQUIRED host
+      # ownership/mode: root:root 0644 — and like passwd/group, the file MUST
+      # exist on the host before `compose up` or Docker creates a DIRECTORY at
+      # /etc/profile, which breaks every login shell in the container.
+      - $DOCKERDIR/appdata/hermes-etc/profile:/etc/profile:ro
       # config.yaml + .env carry EVERY spec §4.7 control: skills.auto_install,
       # messaging.*.allowed_users, tool_loop_guardrails.*, dashboard.trusted_proxies,
       # browser.enabled — plus the OpenRouter key, the GitHub PAT and the dashboard
@@ -294,10 +323,20 @@ services:
       # carries tirith; jq now lives there too. The agent asked for jq on
       # /opt/data/bin and correctly flagged that a writable dir on PATH is a
       # binary-shadowing class of attack. Putting it on the ro mount removes
-      # the trade instead of mitigating it. NOTE: /opt/data/.local/bin is
-      # ALREADY on the image's PATH ahead of /usr/bin, so that exposure exists
-      # regardless — one more reason not to add a second writable PATH entry.
-      PATH: "/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/hermes-bin"
+      # the trade instead of mitigating it.
+      #
+      # /opt/data/.local/bin WAS here (it is on the image's stock PATH, ahead
+      # of /usr/bin) and has been REMOVED, 2026-09-10. It is inside the
+      # agent's writable mount, so it is the same shadowing exposure the
+      # /opt/hermes-bin mount exists to close — carrying it forward only
+      # because the image did was never a reason. Nothing needs it and the
+      # directory does not exist on disk (only .local/share and .local/state).
+      # The /etc/profile mount above strips /opt/data/* independently, so the
+      # entry cannot come back through a digest bump either.
+      #
+      # This PATH does not by itself reach the agent's shell — see the
+      # /etc/profile mount above for why, and for the fix.
+      PATH: "/opt/hermes/bin:/opt/hermes/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/hermes-bin"
       # Caches and scratch redirected off the 64 MB noexec /tmp tmpfs onto the
       # persistent mount. Without these, uv/npm/pip fail on the read-only root
       # or blow the tmpfs on a single large wheel, and the agent re-downloads

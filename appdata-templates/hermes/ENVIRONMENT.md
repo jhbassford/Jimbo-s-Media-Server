@@ -90,8 +90,19 @@ on this deployment, 2026-09-10:
 |---|---|---|
 | allowlisted domain | **0** | worked |
 | non-allowlisted domain | **56** | `HTTP/1.0 403 Filtered`, `Server: tinyproxy` on the CONNECT. **Policy.** Do not retry, do not fall back. |
-| any bare IP except the three below | **28** (timeout) | `HERMES-CONTAIN` dropped it. **Policy.** |
+| bare IP, ordinary curl | **56** | Same 403 as above. `HTTPS_PROXY` is set globally, so curl `CONNECT`s the IP through tinyproxy and the filter refuses it *before* the firewall ever sees a packet. **Policy.** |
+| bare IP, `--noproxy '*'` | **28** (timeout) | Only now do you reach the wire, and `HERMES-CONTAIN` drops it. **Policy.** |
+| bare IP inside `NO_PROXY` (`192.168.90/92/93.0/24`) | **28** | curl bypasses the proxy for these by config, so the drop shows through without any flag. |
 | external name via a resolver | fails always | Expected. Use the proxy; do not "fix" DNS. |
+
+**Read that table carefully: 56 does not mean "domain not on the allowlist".**
+It means "tinyproxy refused the CONNECT", and a bare IP earns the same refusal
+for a different underlying reason. Because `HTTPS_PROXY` is set for everything,
+the default path for *any* target is the proxy — a firewall-dropped IP and a
+non-allowlisted domain are indistinguishable at exit 56. If you actually need
+to tell them apart, re-run with `--noproxy '*'` and look for **28**. Both are
+policy either way, so this only matters when you are describing *which* control
+stopped you.
 
 `curl -sv <url> 2>&1 | grep -i "tinyproxy\|403 Filtered"` is the one-line
 check, and it is a flat single-purpose command that will not trip the scanner
@@ -149,6 +160,7 @@ container lifecycle.
     /opt/data/ENVIRONMENT.md   this file    root:root 0644  (read-only mount)
     /opt/hermes-bin/           tools        root:root 0555  (read-only mount)
     /etc/passwd, /etc/group    identity     root:root 0644  (read-only mount)
+    /etc/profile               shell PATH   root:root 0644  (read-only mount, see §3)
 
 `/opt/data/.env` holds the OpenRouter key, the GitHub PAT, the Telegram bot
 token and the dashboard credentials. You can read it; you can never write it.
@@ -169,12 +181,52 @@ except tripping an alarm.
 
 ## 3. Tools and caches
 
-`/opt/hermes-bin` is on your `PATH` and holds statically linked binaries that
-are **root-owned and read-only**, so nothing in your writable mount can shadow
-or replace them:
+`/opt/hermes-bin` holds statically linked binaries that are **root-owned and
+read-only**, so nothing in your writable mount can shadow or replace them:
 
     /opt/hermes-bin/jq        jq 1.7.1
     /opt/hermes-bin/tirith    the pre-execution scanner (see §5)
+
+### Your `PATH` — fixed 2026-09-10, and how it can look broken again
+
+`/opt/hermes-bin` is on your `PATH`, **including inside your own shell**:
+
+    /opt/hermes/bin:/opt/hermes/.venv/bin:/usr/local/sbin:/usr/local/bin
+    :/usr/sbin:/usr/bin:/sbin:/bin:/opt/hermes-bin
+
+It did not used to be. This image's stock `/etc/profile` **assigned** `PATH`
+rather than extending it, so a login shell run as a non-root UID was left with
+`/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games` and lost
+`/opt/hermes/bin`, `/opt/hermes/.venv/bin` and `/opt/hermes-bin` in one go.
+`/etc/profile` is now a **root-owned read-only bind mount** of a corrected copy
+that keeps the inherited `PATH` instead. Same pattern as `/etc/passwd`.
+
+**The part worth remembering, because it will bite you again after any operator
+change to `PATH`:** you only get a login shell **once per session**.
+`tools/environments/local.py::_run_bash` passes `-l` a single time, for
+`init_session`'s environment snapshot; that snapshot is written to
+`$HERMES_HOME/tmp/hermes-snap-*.sh` as `declare -x` lines, and every command
+after it runs as a **non-login** `bash -c` that sources the snapshot. So
+`shopt -q login_shell` is correctly `false` in your shell and yet the login
+shell's environment is what you are living in — captured at bootstrap and
+inherited for the rest of the session. A `PATH` change made by the operator
+therefore does **not** appear until a new session; the snapshot is the stale
+thing, not the container.
+
+`/opt/data/.local/bin` used to be on `PATH` ahead of `/usr/bin`, inherited from
+the image. It has been **removed**, and the mounted `/etc/profile` strips any
+`/opt/data` entry independently so it cannot return. `/opt/data` is your
+writable mount: a directory on it that sits ahead of `/usr/bin` is a
+binary-shadowing path, which is the whole reason `jq` and `tirith` live on a
+root-owned `0555` mount instead. Nothing needs it and the directory does not
+exist on disk (only `.local/share` and `.local/state` do). Do not ask for it
+back.
+
+### Read exit codes from the right process
+
+`cmd --version 2>&1 | head -1; echo $?` reports **`head`'s** status, not
+`cmd`'s — a pipeline's status is its last stage. That will tell you a missing
+binary is present. Use `command -v cmd`, or run the command unpiped.
 
 Ask the operator to add binaries here rather than installing them into
 `/opt/data/bin` yourself. A tool you can overwrite is a tool an attacker who
@@ -243,8 +295,16 @@ not be loosened to allowlist recon patterns — a scanner that gets relaxed once
 gets relaxed again. **Write flat, single-purpose commands.** It costs a few
 extra turns and nothing else.
 
-`approvals.mode: manual` — flagged commands pause for a human rather than being
-adjudicated by an auxiliary model. `sudo *`, `rm -rf *`, `chmod 777*`,
+`approvals.mode: smart` — a flagged command is adjudicated by a guardian model
+(`auxiliary.approval`, a pinned free model) rather than always stopping a
+human. It **fails safe**: any exception — blocked egress, provider timeout, an
+unparseable answer — returns `escalate`, which falls through to the manual
+prompt, so the worst case is the old manual behaviour and never an
+auto-approve. An `APPROVE` covers that one command only; it never whitelists
+the pattern.
+
+The `deny` globs are not delegated to the guardian — they block first, as does
+the built-in hardline blocklist. `sudo *`, `rm -rf *`, `chmod 777*`,
 `docker *`, `curl|sh`, `wget|sh` and `git push --force*` are denied outright,
 and deny beats any allowlist.
 

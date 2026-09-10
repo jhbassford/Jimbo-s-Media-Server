@@ -1,0 +1,83 @@
+# /etc/profile: system-wide .profile file for the Bourne shell (sh(1))
+# and Bourne compatible shells (bash(1), ksh(1), ash(1), ...).
+#
+# ---------------------------------------------------------------------------
+# nas-docker OVERRIDE. Source of truth: appdata-templates/hermes/profile.
+# Mounted read-only at /etc/profile alongside the passwd/group mounts.
+# Byte-identical to the image's own /etc/profile (digest a62824a4ec6f) EXCEPT
+# for the PATH block below.
+#
+# WHY: the stock block ASSIGNED PATH rather than extending it, so any login
+# shell run as a non-root UID lost the whole custom head of the container's
+# PATH -- /opt/hermes/bin, /opt/hermes/.venv/bin and /opt/hermes-bin -- and was
+# left with /usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games.
+#
+# That mattered more than it looks, because of HOW Hermes uses a login shell.
+# tools/environments/local.py::_run_bash passes `-l` exactly once, for
+# init_session's environment snapshot; the snapshot is written to
+# $HERMES_HOME/tmp/hermes-snap-*.sh as `declare -x` lines and every subsequent
+# command runs as a NON-login `bash -c` that sources it. So the wipe happened
+# once at session bootstrap and was then inherited by every command for the
+# life of the session: `jq` and `tirith` were not found, and bare `python3`
+# resolved to /usr/bin/python3, which cannot import hermes_cli (it lives in the
+# venv at /opt/hermes/.venv, and /opt/hermes is read-only).
+#
+# The `/opt/data/*` filter is NOT incidental. /opt/data is the agent's own
+# writable mount, and the image's stock PATH carries /opt/data/.local/bin ahead
+# of /usr/bin. Naively restoring the container PATH here would hand a
+# prompt-injected agent a writable directory that shadows /usr/bin -- exactly
+# the binary-shadowing trade that putting jq and tirith on the root-owned 0555
+# /opt/hermes-bin mount was meant to avoid. Nothing needs /opt/data/.local/bin;
+# it does not even exist on disk today. Drop every /opt/data entry instead.
+# ---------------------------------------------------------------------------
+
+if [ -n "${PATH:-}" ]; then
+  # Keep the PATH we were started with, minus anything under the agent's
+  # writable mount, minus duplicates. Order is otherwise preserved.
+  _hermes_newpath=
+  _hermes_oldifs=$IFS
+  IFS=:
+  for _hermes_dir in $PATH; do
+    [ -z "$_hermes_dir" ] && continue
+    case "$_hermes_dir" in
+      /opt/data|/opt/data/*) continue ;;
+    esac
+    case ":$_hermes_newpath:" in
+      *":$_hermes_dir:"*) continue ;;
+    esac
+    _hermes_newpath="${_hermes_newpath:+$_hermes_newpath:}$_hermes_dir"
+  done
+  IFS=$_hermes_oldifs
+  [ -n "$_hermes_newpath" ] && PATH=$_hermes_newpath
+  unset _hermes_newpath _hermes_oldifs _hermes_dir
+elif [ "$(id -u)" -eq 0 ]; then
+  PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+else
+  PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games"
+fi
+export PATH
+
+if [ "${PS1-}" ]; then
+  if [ "${BASH-}" ] && [ "$BASH" != "/bin/sh" ]; then
+    # The file bash.bashrc already sets the default PS1.
+    # PS1='\h:\w\$ '
+    if [ -f /etc/bash.bashrc ]; then
+      . /etc/bash.bashrc
+    fi
+  else
+    if [ "$(id -u)" -eq 0 ]; then
+      PS1='# '
+    else
+      PS1='$ '
+    fi
+  fi
+fi
+
+if [ -d /etc/profile.d ]; then
+  for i in $(run-parts --list --regex '^[a-zA-Z0-9_][a-zA-Z0-9._-]*\.sh$' /etc/profile.d); do
+    if [ -r $i ]; then
+      . $i
+    fi
+  done
+  unset i
+fi
