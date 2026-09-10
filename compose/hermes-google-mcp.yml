@@ -138,6 +138,16 @@ services:
       GOOGLE_OAUTH_REDIRECT_URI: "https://gws.bassford.net/oauth2callback"
       GOOGLE_CLIENT_SECRET_PATH: /config/client_secret.json
       GOOGLE_MCP_CREDENTIALS_DIR: /credentials
+      # The one configured account. With MCP_ENABLE_OAUTH21 unset,
+      # core/config.py keeps USER_GOOGLE_EMAIL active; core/server.py then marks
+      # the tools' user_google_email parameter optional with this default,
+      # INJECTS it into every call, and puts "Connected Google account: <email>
+      # ... always use it; do not ask the user" into the MCP server instructions.
+      # Measured without it: the agent passes a placeholder and the server starts
+      # a fresh OAuth handshake instead of using the token already on the
+      # credentials volume. No secret -- the address is already the token's
+      # filename and appears throughout the verify records.
+      USER_GOOGLE_EMAIL: "jhbassford@gmail.com"
       # MCP_ENABLE_OAUTH21 deliberately UNSET -- see deviation 3.
       #
       # Second lock on top of --permissions. drive:readonly and docs:readonly

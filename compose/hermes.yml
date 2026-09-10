@@ -298,7 +298,16 @@ services:
       HERMES_DASHBOARD_PORT: 9119
       HTTP_PROXY: http://192.168.92.2:8888
       HTTPS_PROXY: http://192.168.92.2:8888
-      NO_PROXY: 192.168.90.0/24,192.168.92.0/24,192.168.93.0/24,localhost,127.0.0.1
+      # NO_PROXY holds CIDRs for the internal docker subnets, but NOT every HTTP
+      # client honours CIDR notation -- measured 2026-09-10: the MCP client
+      # (httpx2, in the vendored mcp SDK) does not. The Google MCP call to
+      # 192.168.92.3 was therefore handed to the egress Tinyproxy and refused
+      # (403): `hermes mcp test google` failed, and the same call with the proxy
+      # disabled succeeded. The exact IP is listed alongside the CIDR for every
+      # internal peer the agent initiates to, because "on the same subnet" is
+      # only a bypass if the client parses the subnet. The Google MCP endpoint
+      # is the one that bites today; add the exact IP here for any future one.
+      NO_PROXY: 192.168.90.0/24,192.168.92.0/24,192.168.93.0/24,192.168.92.3,localhost,127.0.0.1
       DOCKER_HOST: tcp://192.168.93.2:2375
       # Write sandbox: confines write_file/patch to these prefixes at the TOOL
       # layer, so a denied write gives a clear error rather than an opaque EROFS.

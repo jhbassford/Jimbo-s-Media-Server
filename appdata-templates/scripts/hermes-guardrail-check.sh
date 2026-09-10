@@ -20,9 +20,10 @@
 #
 # WHAT IT DOES NOT DO
 # It does not revert. Reverting would undo legitimate UI changes and defeat the
-# reason config.yaml was made writable. It compares only the SECURITY keys
-# against a root-owned golden copy the agent cannot read or write, and shouts.
-# Model, personality and cosmetic changes are ignored by design.
+# reason config.yaml was made writable. It compares the SECURITY keys -- and, as
+# of 2026-09-10, the mcp_servers.* tool allowlist (spec section 5) -- against a
+# root-owned golden copy the agent cannot read or write, and shouts. Model,
+# personality and cosmetic changes are ignored by design.
 #
 # ACCEPTING A LEGITIMATE CHANGE
 #   sudo /volume1/docker/scripts/hermes-guardrail-check.sh --accept
@@ -55,7 +56,7 @@ extract() {
 	/usr/bin/awk '
 		# A new top-level key (column 0, ends in ":") switches section tracking.
 		/^[A-Za-z_][A-Za-z0-9_]*:/ {
-			insec = ($0 ~ /^(approvals|security|skills|tool_loop_guardrails|terminal|dashboard):/)
+			insec = ($0 ~ /^(approvals|security|skills|tool_loop_guardrails|terminal|dashboard|mcp_servers):/)
 		}
 		insec {
 			line = $0

@@ -261,9 +261,13 @@ supply-chain path and is disabled on purpose.
   arguable, broad egress is not.
 - **`api.openai.com`** — deliberate. The model route is OpenRouter
   (`model.provider: openrouter`). Route around it, do not ask for it.
-- **Google APIs** — designed but **not yet deployed**. When it lands it will be
-  a separate MCP container on its own egress proxy, and `*.googleapis.com` will
-  *still* not be in your allowlist.
+- **Google APIs** — **deployed, and deliberately not in your egress allowlist.**
+  Access goes through a separate MCP container (`mcp_servers.google`, at
+  `http://192.168.92.3:8000/mcp`), which holds the OAuth token in its own volume
+  and reaches `*.googleapis.com` through its own allowlist proxy. You call it
+  with the `google` MCP tools and never see a Google credential: the token is not
+  on any mount you can read, and `*.googleapis.com` is still absent from your own
+  proxy filter.
 
 ---
 

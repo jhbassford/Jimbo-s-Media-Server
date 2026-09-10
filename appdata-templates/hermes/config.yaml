@@ -1,20 +1,29 @@
 # Hermes agent configuration — spec §4.7 controls.
 #
 # SOURCE OF TRUTH: this file, in git.
-# HOST PATH:       /volume1/docker/appdata/hermes-etc/config.yaml
-# OWNER/MODE:      root:root 0644   (see appdata-templates/README.md)
-# MOUNTED AS:      /opt/data/config.yaml  READ-ONLY
+# SEED PATH:       /volume1/docker/appdata/hermes-etc/config.yaml
+#                  (root:root 0644 — see appdata-templates/README.md)
+# LIVE COPY:       /volume1/docker/appdata/hermes/config.yaml
+#                  (1000:10 0640 — a normal file inside the writable /opt/data
+#                  mount, at /opt/data/config.yaml; NOT a bind mount)
 #
-# It is deliberately NOT in /volume1/docker/appdata/hermes (the read-write
-# /opt/data mount). Every control below is a containment guardrail; if the
-# agent could rewrite them and then restart itself through the socket proxy,
-# the guardrails would be advisory rather than enforced.
+# This file is the SEED, not the running config. It is copied into
+# /volume1/docker/appdata/hermes/ so the dashboard's model picker can persist —
+# a bind-mounted FILE can never be atomically replaced (os.replace -> Errno 16),
+# so a :ro mount left Hermes on its copyfile fallback. The live copy is therefore
+# agent-writable, knowingly: that reopens the first leg of review finding C3.
 #
-# CHANGING ANY VALUE HERE IS AN OPERATOR ACTION ON THE NAS HOST:
-#   1. edit /volume1/docker/appdata/hermes-etc/config.yaml over SSH (as root)
+# CHANGING A CONTROL IS STILL AN OPERATOR ACTION ON THE NAS HOST:
+#   1. edit the copy that is actually live
+#        /volume1/docker/appdata/hermes/config.yaml
+#      over SSH as root, or edit this seed and re-seed it
 #   2. restart the container
-# There is no in-container write path: the bind mount is :ro, the container is
-# read_only: true, and cap_drop: ALL removes CAP_DAC_OVERRIDE. That is the point.
+# The agent CAN rewrite the live copy, so it is not an enforced boundary by
+# itself. Three things hold it down: (a) hermes is not in the socket proxy's
+# restart allowlist, so a tampered value only takes effect at the next
+# operator restart; (b) hermes.env stays read-only; and (c) guardrail drift is
+# detected hourly against a root-owned golden copy (hermes-guardrail-check.sh),
+# which since 2026-09-10 also covers mcp_servers.*.
 #
 # Secrets NEVER live here — they go in hermes.env (mounted at /opt/data/.env).
 #
@@ -239,3 +248,57 @@ dashboard:
 # which is equally root-owned and read-only, so it is still a guardrail the agent
 # cannot rewrite. Use GATEWAY_ALLOWED_USERS (cross-platform). NEVER set
 # GATEWAY_ALLOW_ALL_USERS.
+
+# Google Workspace via an isolated MCP container (spec 2026-09-10 section 5).
+# The OAuth token lives in hermes-google-mcp's own volume and is NOT reachable
+# from this container -- that absence is the point of the whole design.
+#
+# THIS INCLUDE LIST IS LAYER 2 AND IT IS THE WEAKER LAYER. The live copy of this
+# file is agent-writable (see the header), so it is advisory-until-restart,
+# exactly like the security.* keys. The ENFORCING layer is --permissions plus
+# WORKSPACE_MCP_DISABLED_TOOLS in compose/hermes-google-mcp.yml, which is
+# root-owned and which the agent cannot touch. Verified live: the server
+# registers exactly 24 tools, with no Drive/Docs writers and none of the four
+# sharing tools.
+#
+# The exact tool names are the live ones, read from a real MCP tools/list. The
+# four Drive public-link tools (set_drive_file_permissions, manage_drive_access,
+# get_drive_shareable_link, check_drive_file_public_access) are ABSENT, as spec
+# section 2 requires. start_google_auth is deliberately excluded (the token
+# exists; the agent must not start a new consent flow) and list_document_comments
+# is excluded as out of the agreed surface.
+#
+# send_gmail_message is deliberately ABSENT until the send gate is settled
+# (spec section 6). Drafts are ungated; sending is not exposed yet.
+mcp_servers:
+  google:
+    url: "http://192.168.92.3:8000/mcp"
+    enabled: true
+    timeout: 120
+    tools:
+      include:
+        - search_gmail_messages
+        - get_gmail_message_content
+        - get_gmail_messages_content_batch
+        - get_gmail_thread_content
+        - get_gmail_threads_content_batch
+        - get_gmail_attachment_content
+        - list_gmail_labels
+        - draft_gmail_message
+        - get_events
+        - list_calendars
+        - manage_event
+        - query_freebusy
+        - search_drive_files
+        - list_drive_items
+        - get_drive_file_content
+        - get_drive_file_permissions
+        - search_docs
+        - get_doc_content
+        - get_doc_as_markdown
+        - list_docs_in_folder
+        - inspect_doc_structure
+      # Drop third-party utility wrappers we do not need. Their descriptions are
+      # model-facing text from an upstream project (spec section 7.4).
+      resources: false
+      prompts: false
