@@ -726,10 +726,29 @@ control that fails open.
 > being served. Existing routes unaffected (sonarr 401, dozzle 401, portainer 200).
 > A backup of the previous file is at `apps.yml.bak-pre-hermes`.
 >
-> **REMAINING — needs the operator's Cloudflare login:** the `hermes` CNAME to
-> `<tunnel-id>.cfargotunnel.com` (proxied), the Access application, and the WAF
-> rate-limit rule. Until the CNAME exists the hostname resolves via the DDNS
-> wildcard and returns 522 from outside.
+> **COMPLETE 2026-09-10.** CNAME created and verified (resolves to the Cloudflare
+> edge, same as other tunnelled hosts). Access application live: an
+> unauthenticated request returns **302** to
+> `https://bassfja.cloudflareaccess.com/cdn-cgi/access/login/hermes.bassford.net`
+> with `Www-Authenticate: Cloudflare-Access`, and the signed metadata carries
+> `"hostname":"hermes.bassford.net"`, `"auth_status":"NONE"`. Identity is
+> **one-time PIN** to the owner's email — no IdP needed; OTP is built into the
+> free Zero Trust plan.
+>
+> **The WAF rate-limit rule was dropped deliberately, not skipped.** Cloudflare
+> bills it separately, and it would have been redundant: the Hermes route already
+> uses `chain-basic-auth@file`, which includes `middlewares-rate-limit`
+> (average 100, burst 50). Trade-off accepted knowingly — origin-side limiting
+> only engages after traffic reaches Traefik rather than at the edge, but Access
+> refuses unauthenticated requests before they enter the tunnel at all.
+>
+> Two gotchas worth keeping:
+> - **Access changes take time to propagate.** Immediately after creating the
+>   application the hostname still returned Traefik's 401; it became a 302 a few
+>   minutes later. Do not conclude the app is misconfigured from one early probe.
+> - `/cdn-cgi/access/login` returns 404 even when Access IS active — the real
+>   login path includes the app hostname. It is not a useful health check; test
+>   the hostname root and look for a 302.
 >
 > Note when testing: `wget`/`curl` against `localhost:443` with only a `Host:`
 > header returns **421 Misdirected Request** — Traefik uses `matchSNItoHost`, so
