@@ -70,15 +70,26 @@ the design would not work at all, since the server runs in a separate container.
 ## 3. Architecture
 
 ```
-Hermes (192.168.92.10)  ──MCP / streamable-HTTP──>  hermes-google-mcp (192.168.92.3:8000)
-                                                              │
-                                                        HTTPS_PROXY
-                                                              ▼
-                                                hermes-google-egress (192.168.92.4:8888)
-                                                              │  googleapis.com only
-                                                              ▼
-                                                           Google
+                    hermes_net (192.168.92.0/24)      hermes_google (192.168.95.0/24)
+                                                          TWO MEMBERS ONLY
+Hermes (.10) ──MCP/streamable-HTTP──> hermes-google-mcp (.3 | .10) ──HTTPS_PROXY──> hermes-google-egress (.2:8888)
+                                                                                          │ googleapis.com only
+                                                                                          ▼
+                                                                                       Google
 ```
+
+**`hermes-google-egress` is on its own two-member network, not on `hermes_net`,
+and this is load-bearing.** Tinyproxy's ACL is source-IP based (`Allow
+<cidr>`), so an egress proxy sharing `hermes_net` would accept clients from the
+whole `/24` — including Hermes at `.10`, which could simply point its own
+`HTTPS_PROXY` at it and reach Google directly. `DOCKER-USER` would not stop
+that, because intra-bridge traffic to `192.168.92.0/24` is permitted by design.
+Putting the proxy on `hermes_google` with `Allow 192.168.95.0/24` means the MCP
+container is the only client that can reach it at all, and the claim below that
+Hermes' egress is unchanged actually holds.
+
+`hermes_google` is `192.168.95.0/24`; `.90`–`.94` are already taken by
+`t3_proxy`, `socket_proxy`, `hermes_net`, `hermes_socket` and `hermes_ingress`.
 
 **Hermes' own egress allowlist and `DOCKER-USER` rules are unchanged.** This is
 the central structural win and it is not incidental: because the MCP server is a
@@ -90,9 +101,12 @@ reasoning as the Signal integration brief.
 
 `hermes-google-egress` is a second tinyproxy instance reusing the existing
 pattern with a googleapis-only filter. As with Hermes itself, the filter is the
-*policy* and iptables is the *enforcement*: a `DOCKER-USER` DROP keyed to the MCP
-container's own source IP denies it direct outbound, so a library that ignores
-`HTTPS_PROXY` does not get out — it fails. Rationale: that container holds a send-capable Gmail
+*policy* and iptables is the *enforcement*: `DOCKER-USER` DROPs keyed to **both**
+of the MCP container's source IPs (`192.168.92.3` and `192.168.95.10`) deny it
+direct outbound, with the `INPUT_FIREWALL` companion for container-to-host
+traffic, exactly as parent §4.5 requires and for the same reason — a multi-homed
+container's choice of egress interface is not guaranteed. A library that ignores
+`HTTPS_PROXY` does not get out; it fails. Rationale: that container holds a send-capable Gmail
 token, and by the logic applied everywhere else in this stack a credential of
 that value gets its own egress boundary rather than free internet access. It is
 the cheapest element here to cut if the operator later decides a
