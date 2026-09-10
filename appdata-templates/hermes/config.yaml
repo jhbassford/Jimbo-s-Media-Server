@@ -50,61 +50,166 @@
 # bearer token is, so it belongs here rather than in hermes.env.
 
 model:
-  # Verified key names (present in the image's shipped example config).
+  # Verified: resolve_provider_client resolves these (see container logs).
   default: "anthropic/claude-sonnet-5"
   provider: "openrouter"
 
+auxiliary:
+  # free_only alone SKIPS the OpenRouter fallback entirely when the main model
+  # is not a :free SKU, leaving auxiliary tasks (vision, compression, title
+  # generation, and the approvals.mode: smart classifier) with NO backend at all.
+  # Pairing it with a :free model is what the schema intends. Verified present in
+  # the live OpenRouter catalogue, and it is the model Hermes own error names.
+  openrouter_model: "nvidia/nemotron-3-ultra-550b-a55b:free"
+  # Per-task aux blocks default to provider "auto", which INHERITS the main model
+  # (sonnet-5) and is then rejected by free_only - which is why the aux lane was
+  # dead even after setting openrouter_model. auxiliary_client does
+  # or_model = model or cfg_model, so an explicitly-passed model wins over
+  # openrouter_model. Pinning the blocks that matter is what actually engages it.
+  approval:
+    provider: "openrouter"
+    model: "nvidia/nemotron-3-ultra-550b-a55b:free"
+  compression:
+    provider: "openrouter"
+    model: "nvidia/nemotron-3-ultra-550b-a55b:free"
+  title_generation:
+    enabled: true
+    provider: "openrouter"
+    model: "nvidia/nemotron-3-ultra-550b-a55b:free"
+  # VERIFIED KEY: agent/auxiliary_client.py reads cfg_get(cfg,"auxiliary","free_only").
+  # Default is false, which means background/helper calls fall back to
+  # google/gemini-3.6-flash (PAID) even though you never sent a message. true =
+  # the OpenRouter step is skipped unless the model ends in ":free", so spend
+  # tracks messages you deliberately send.
+  free_only: true
+
 terminal:
-  # Verified key name. The `docker` backend is deliberately unused: it
-  # sandboxes by CREATING containers, the exact privilege the restricted
-  # socket proxy refuses. This container is itself the sandbox.
+  # The `docker` backend is deliberately unused. Every hardening guide recommends
+  # it, and we cannot use it: it sandboxes by CREATING containers, exactly the
+  # privilege the restricted socket proxy refuses, and DSM's 4.4 kernel has no
+  # rootless Docker. The compensating control is that THIS CONTAINER IS THE
+  # SANDBOX (read_only, cap_drop ALL, no-new-privileges, egress via iptables).
+  # Knowing deviation, recorded in the spec - not an oversight.
   backend: "local"
 
-tool_loop_guardrails:
-  # Verified key name; `true` is also the shipped default. Pinned explicitly
-  # so a future image default flip cannot silently disable it.
-  non_interactive_hard_stop_enabled: true
+approvals:
+  # VERIFIED SECTION (config_defaults.py:1520). The three *_mode defaults are
+  # already "deny" - pinned here so a future image default-flip cannot silently
+  # open them. unattended_mode is the one that matters most: it governs the
+  # webhook/API surface, i.e. the messaging path.
+  # manual, NOT smart. smart delegates the risk call to an auxiliary LLM, and on
+  # this deployment the auxiliary lane had NO working backend (nous unauthenticated,
+  # OpenRouter skipped by free_only) - so the classifier smart depends on was simply
+  # absent, and its failure behaviour was not something I could establish from the
+  # source in reasonable time. manual removes the dependency entirely: every flagged
+  # command pauses for a human instead of asking a free model to adjudicate.
+  # Dangerous commands should be rare; if this proves tedious, "smart" is a one-word
+  # revert now that auxiliary has a working free backend below.
+  mode: "manual"
+  cron_mode: "deny"
+  single_query_mode: "deny"
+  unattended_mode: "deny"
+  mcp_reload_confirm: true
+  destructive_slash_confirm: true
+  # Deny takes precedence over any allowlist. These are patterns, not a
+  # substitute for the hardline blocklist (rm -rf /, fork bombs) which is always
+  # enforced and cannot be overridden.
+  deny:
+    - "sudo *"
+    - "rm -rf *"
+    - "chmod 777*"
+    - "chown -R root*"
+    - "*curl*|*sh*"
+    - "*wget*|*sh*"
+    - "dd if=* of=/dev/*"
+    - "docker *"
+    - "git push --force*"
+
+security:
+  # VERIFIED SECTION (config_defaults.py:1589).
+  #
+  # allow_lazy_installs defaults to TRUE. That permits runtime package
+  # installation, which is a supply-chain path that walks straight past the
+  # Tinyproxy egress allowlist by pulling from registries we DO allow. This is
+  # the single most valuable change in this file.
+  allow_lazy_installs: false
+  # Defaults, pinned so a future image cannot flip them silently.
+  allow_private_urls: false
+  redact_secrets: true
+  protected_instruction_files: true
+  # NOTE ON TIRITH: tirith_enabled defaults true, but `command -v tirith` returns
+  # nothing in this image - pre-exec scanning is currently a NO-OP, enabled but
+  # unavailable and failing open. Do NOT set tirith_fail_open: false to "fix"
+  # this: with tirith absent, failing closed blocks ALL execution and bricks the
+  # agent. Either install tirith, or do not count this layer. Left at defaults
+  # deliberately, documented rather than pretended.
+  tirith_enabled: true
+  tirith_fail_open: true
+  # Defence in depth for the browser, which may not honour HTTP_PROXY the way
+  # the Python HTTP stack does. The agent has no reason to browse this
+  # household's own admin surfaces.
+  website_blocklist:
+    enabled: true
+    domains:
+      - "*.bassford.net"
+      - "localhost"
+
+skills:
+  # VERIFIED SECTION (config_defaults.py:1324).
+  # `skills.auto_install` DOES NOT EXIST and was removed from this file - the
+  # only auto_install keys in the schema belong to secrets.bitwarden and proxy.
+  # It was silently ignored. These are the real controls:
+  #
+  # inline_shell false = SKILL.md !`cmd` snippets are NOT pre-executed on the
+  # host at load time. This is the nastiest thing in the section; it is the
+  # default, pinned here.
+  inline_shell: false
+  # Agent-written skills are staged for /skills approve rather than taking
+  # effect immediately. This is the real version of what auto_install: false
+  # was meant to do.
+  write_approval: true
+  # Security-scan skills the agent writes. The schema is candid that this is
+  # weak - "the agent can run the same code via terminal() ungated, so it mostly
+  # blocks prose with risky keywords" - but it costs nothing.
+  guard_agent_created: true
+  # No scanning of project dirs for skills. Already gated by an empty
+  # trusted_project_dirs; belt and braces.
+  project_discovery: false
+  trusted_project_dirs: []
 
 browser:
-  # Chromium on a J4125 is impractical, and disabling it removes the single
-  # largest untrusted-content parsing surface. Re-enabling requires
-  # shm_size: 1g in compose. `extension_control.enabled` IS a verified key;
-  # the bare `enabled` key is from the plan and needs confirming.
-  enabled: false
+  # `browser.enabled` DOES NOT EXIST and was removed - the schema has `backend`,
+  # not `enabled`, so that line was silently ignored too. There appears to be no
+  # clean "disable the browser entirely" switch; stating that plainly rather
+  # than inventing a setting. allow_private_urls is the meaningful control: it
+  # blocks the browser reaching localhost / 192.168.x.x, i.e. SSRF into the LAN.
+  allow_private_urls: false
+  auto_local_for_private_urls: false
   extension_control:
     enabled: false
 
-skills:
-  # ClawHavoc-class registry risk: manual install only. NEEDS VERIFICATION.
-  auto_install: false
+tool_loop_guardrails:
+  # Unattended gateways hard-stop by default; pinned.
+  non_interactive_hard_stop_enabled: true
+  warnings_enabled: true
+  # Defaults are 50/50 PER TURN. On a 4-core J4125 that is a resource-exhaustion
+  # event, not a guardrail.
+  loop_caps:
+    max_web_searches: 10
+    max_subagents: 10
 
 dashboard:
-  # NEEDS VERIFICATION — no `dashboard:` section exists in the shipped example.
   public_url: "https://hermes.bassford.net"
   trusted_proxies:
-    # Traefik on hermes_ingress (two-member net). Bounded — never 0.0.0.0/0.
+    # Traefik on hermes_ingress (two-member net). Bounded - never 0.0.0.0/0.
     - "192.168.94.254"
-  # Auth provider — VERIFIED 2026-09-10 from the container's own refusal-to-bind
-  # message. Configured HERE, not via HERMES_DASHBOARD_BASIC_AUTH_* env vars as
-  # the plan originally assumed. Generate the hash with the image's own function
-  # (confirmed working against digest a62824a4ec6f):
-  #   printf '%s' '<password>' | docker exec -i -u 1000:10 hermes python -c   #     "import sys; from plugins.dashboard_auth.basic import hash_password;   #      print(hash_password(sys.stdin.read().strip()))"
-  # Output looks like: scrypt$16384$8$1$<salt>$<hash>
-  # Keep the PLAINTEXT out of git and out of this file — password manager only.
-  # A scrypt hash is not a bearer secret, so the hash belongs here, not in
-  # hermes.env. Until this is set the container fails CLOSED: it refuses to bind
-  # the dashboard at all, which is correct but means no dashboard.
   basic_auth:
     username: "jim"
-    password_hash: "<PLACEHOLDER — generate with the command above>"
+    password_hash: "<PLACEHOLDER - generate with the command in the plan>"
 
-# messaging: added in plan Task 6, when a channel is first connected. The
-# sender allowlist is the control that keeps the bot from being an open shell,
-# so it belongs in THIS read-only file, never in /opt/data.
-#
-# messaging:
-#   telegram:
-#     enabled: true
-#     allowed_users:
-#       - <TELEGRAM_NUMERIC_USER_ID>
-#     reject_unknown: true
+# Messaging sender allowlists are ENVIRONMENT VARIABLES, not YAML. `hermes config
+# check` lists TELEGRAM_ALLOWED_USERS / GATEWAY_ALLOWED_USERS / *_ALLOW_ALL_USERS.
+# A `messaging:` block here would be silently ignored. They go in hermes.env,
+# which is equally root-owned and read-only, so it is still a guardrail the agent
+# cannot rewrite. Use GATEWAY_ALLOWED_USERS (cross-platform). NEVER set
+# GATEWAY_ALLOW_ALL_USERS.

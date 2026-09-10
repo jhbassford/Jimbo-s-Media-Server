@@ -231,6 +231,17 @@ services:
       HTTPS_PROXY: http://192.168.92.2:8888
       NO_PROXY: 192.168.90.0/24,192.168.92.0/24,192.168.93.0/24,localhost,127.0.0.1
       DOCKER_HOST: tcp://192.168.93.2:2375
+      # Write sandbox: confines write_file/patch to these prefixes at the TOOL
+      # layer, so a denied write gives a clear error rather than an opaque EROFS.
+      # Verified read by agent/file_safety.py::get_safe_write_roots.
+      #
+      # It lives HERE and not in hermes.env because that file's loader TRUNCATES
+      # the value at the first ":" - measured: the file contained
+      # /opt/data:/opt/code, quoted and unquoted, and the process env showed only
+      # /opt/data, which would have silently broken the coding role. Compose
+      # passes it through intact. Not a secret, so nothing is lost by it being
+      # visible in `docker inspect`.
+      HERMES_WRITE_SAFE_ROOT: "/opt/data:/opt/code"
     networks:
       # NOT t3_proxy - see the hermes_ingress comment in docker-compose.yml.
       hermes_ingress:
