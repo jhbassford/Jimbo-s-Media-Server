@@ -166,9 +166,21 @@ in `appdata-templates/scripts/`): `hermes-firewall.sh` — the egress-enforcemen
 boundary, and the one control here that fails OPEN if it goes missing —
 `hermes-guardrail-check.sh`, and `hermes-set-model.sh`.
 
-### Docker API (use this instead of sudo docker commands)
+---
 
-The Docker socket proxy is accessible at `localhost:2375` on the NAS — use it via SSH instead of `sudo docker`:
+# Docker API over the socket proxy
+
+> Belongs with **SSH / Docker** above — it is a general convenience for this NAS,
+> not part of the Hermes section that precedes it.
+
+**There are two socket proxies on this box. Do not confuse them.**
+
+| Proxy | Address | Scope |
+|---|---|---|
+| `socket-proxy` (tecnativa) | `localhost:2375` | **Permissive.** `POST=1`, `CONTAINERS=1`, `IMAGES=1`, `VOLUMES=1` — it can create containers, which on this host is equivalent to root (mount `/` into a new container). Serves Traefik, Portainer, Dozzle, Watchtower. This is the one described below. |
+| `hermes-socket-proxy` (wollomatic) | `192.168.93.2:2375`, `hermes_socket` net only | **Restricted.** Read endpoints plus `restart` of eight named containers. Exists so the agent never touches the permissive one. Never point Hermes at `localhost:2375`. |
+
+The permissive proxy is accessible at `localhost:2375` on the NAS — use it via SSH instead of `sudo docker`:
 
 ```bash
 # Pull image
