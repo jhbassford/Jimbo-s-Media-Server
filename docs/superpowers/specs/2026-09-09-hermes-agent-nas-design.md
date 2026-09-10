@@ -156,10 +156,25 @@ Defence in depth, outermost first:
    SSO + MFA, short session lifetime.
 2. **Cloudflare WAF** rate limiting.
 3. **Tunnel** — outbound-only; no UDM port-forward exists or is created.
-4. **Traefik** file rule in `apps.yml` on `websecure`, using `chain-basic-auth`
-   (rate limit + secure headers + basic auth).
-5. **Hermes' own mandatory dashboard auth** at the origin
-   (`HERMES_DASHBOARD_BASIC_AUTH_*`).
+4. **Traefik** file rule in `apps.yml` on `websecure`, using **`chain-no-auth`**
+   (rate limit 100/burst 50 + secure headers). Deliberately *not*
+   `chain-basic-auth`: that chain uses the stack-wide `middlewares-basic-auth`
+   htpasswd — the same shared credential as sabnzbd, bazarr and dozzle — so it
+   would add a third prompt without adding a third *secret*. This repo's own
+   convention (`CLAUDE.md`) is `chain-no-auth` for services that have their own
+   login. Hermes does. The rate limit matters here because the Cloudflare WAF
+   rule was deliberately skipped as separately billed and redundant with it.
+5. **Hermes' own mandatory dashboard auth** at the origin —
+   `dashboard.basic_auth.username` + `password_hash` in `config.yaml`, *not* the
+   `HERMES_DASHBOARD_BASIC_AUTH_*` env vars originally assumed. The image fails
+   **closed**: it refuses to bind a non-loopback dashboard with no auth provider,
+   so this cannot be skipped. Because `config.yaml` is root-owned and mounted
+   read-only, this credential is also one of the §4.7 guardrails the agent itself
+   cannot rewrite.
+
+The result is **two independent layers** rather than three overlapping ones:
+edge identity (Access) and an app-specific credential (Hermes). Dropping the
+shared-secret middle layer removes a prompt without removing a distinct lock.
 
 Hermes joins `hermes_ingress` — a two-member network shared only with Traefik, **not** the stack-wide `t3_proxy` — and publishes **no host ports at all** — not even
 loopback. It is unreachable from the LAN; only Traefik can reach it, over the

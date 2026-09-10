@@ -726,6 +726,18 @@ control that fails open.
 > being served. Existing routes unaffected (sonarr 401, dozzle 401, portainer 200).
 > A backup of the previous file is at `apps.yml.bak-pre-hermes`.
 >
+> **ROUTE USES `chain-no-auth`, changed 2026-09-10 after review.** Originally
+> `chain-basic-auth`, for three challenges. That was a prompt without a lock:
+> `chain-basic-auth` uses the stack-wide `middlewares-basic-auth` htpasswd shared
+> with sabnzbd/bazarr/dozzle, so it gated Hermes behind a credential that already
+> protects four other services. `CLAUDE.md`'s own rule is `chain-no-auth` for
+> services with their own login, and Hermes' login is mandatory. `chain-no-auth`
+> retains the rate limit and secure headers.
+> Verified after the switch: public request → **302** to Access with **no**
+> `Www-Authenticate: Basic` header, and origin-via-Traefik → **502** (Traefik now
+> passes through; Hermes is still failing closed with no auth provider set). That
+> 502 becomes a 401 from Hermes once the dashboard password is configured.
+>
 > **COMPLETE 2026-09-10.** CNAME created and verified (resolves to the Cloudflare
 > edge, same as other tunnelled hosts). Access application live: an
 > unauthenticated request returns **302** to
