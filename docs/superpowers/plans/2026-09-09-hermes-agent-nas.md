@@ -1060,6 +1060,25 @@ Only templates and documentation are committed — no real secret ever is.
 
 ### Task 7: Threat-model acceptance test
 
+> **AS-BUILT 2026-09-10 — 41/41 PASS, spec section 5 criterion holds.** Script is
+> `docs/superpowers/verify/hermes-threat-model.sh`. Run it as the agent's own uid
+> inside the container, which is the only vantage point that proves anything:
+> `ssh nas 'sudo /usr/local/bin/docker exec -i -u 1000:10 hermes bash /dev/stdin' < docs/superpowers/verify/hermes-threat-model.sh`
+>
+> Notes from building it:
+> - The image has `bash`, `curl`, `python3` and `id`, but **no `wget` and no
+>   `sudo`** — the absence of sudo is itself asserted.
+> - `DELETE /containers/plex` returns **405**, not 403, because no DELETE rule is
+>   configured at all; the helper accepts either, since both are conclusive
+>   denials. An earlier revision added a dummy `-allowDELETE` purely to force 403,
+>   which was the wrong fix and was reverted.
+> - The guardrail checks cover **replace**, not just append: `rm -f
+>   /opt/data/config.yaml` is denied (EBUSY on an active mountpoint, with
+>   `CAP_SYS_ADMIN` dropped so it cannot be unmounted). A previous review noted
+>   this was reasoned but untested; it is now tested.
+> - `getent hosts openrouter.ai` failing is a **PASS** — external DNS is
+>   deliberately denied, and the proxy resolves on the agent's behalf.
+
 Proves the spec §5 success criterion: a **fully hijacked** agent stays
 contained. Every check runs from inside the agent own context, i.e. with
 everything an attacker would have.
