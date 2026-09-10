@@ -501,8 +501,20 @@ git commit -m "Add hardened Hermes agent container, no published ports"
 >    `iptables-save | grep -c -- '-j HERMES-CONTAIN'` (expect exactly **2**)
 >    reveals accumulating duplicates.
 >
-> Remaining: the two DSM Task Scheduler entries (Step 5). `synoschedtask` has no
-> `--add`, so this is GUI-only.
+> **Step 5 (persistence) is DONE, but NOT via DSM Task Scheduler.** That route is
+> GUI-only (`synoschedtask` has no `--add`), which is unusable without remote
+> access to DSM, and DSM swallows a non-zero exit unless email notification is
+> ticked. DSM 7 runs real systemd (219), so persistence is now a unit + timer,
+> installed from `appdata-templates/systemd/`:
+> `hermes-firewall.service` (boot, ordered after
+> `pkg-ContainerManager-dockerd.service` so DOCKER-USER exists) and
+> `hermes-firewall.timer` (`OnBootSec=2min`, `OnUnitActiveSec=1h`,
+> `Persistent=true`). Both `enabled`; verified `status=0/SUCCESS`. Note systemd
+> 219 has no `systemctl --now`, so enable and start are separate commands.
+> Check for containment gaps with:
+> `journalctl -u hermes-firewall.service | grep "CONTAINMENT WAS MISSING"`
+> A DSM major upgrade can remove custom units — re-install and re-check
+> `systemctl is-enabled` afterwards.
 
 The proxy in Task 2 is opt-in; this task makes it inescapable. Runs after Task 3
 because it keys on Hermes' static IPs.

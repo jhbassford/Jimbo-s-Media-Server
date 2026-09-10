@@ -1,0 +1,40 @@
+# Hermes containment - hourly re-apply.
+#
+# HOST PATH: /etc/systemd/system/hermes-firewall.timer
+# Enable with: systemctl daemon-reload && systemctl enable --now hermes-firewall.timer
+#
+# WHY HOURLY AND NOT JUST AT BOOT
+# A Docker package restart, a ContainerManager update, or a `docker compose
+# down/up` rebuilds the iptables chains WITHOUT a reboot - silently dropping
+# containment while the agent keeps running. A boot-only trigger never notices.
+# The re-apply is idempotent (the script flush-and-refills its own chain and
+# de-duplicates its jumps), so running it hourly costs nothing and is the only
+# thing that closes that window.
+#
+# If the script finds the rules were missing it logs CONTAINMENT WAS MISSING to
+# the journal. That means the agent was uncontained for up to an hour, and -
+# because rule 1 of the chain is an unconditional ESTABLISHED,RELATED RETURN, and
+# conntrack(8) is not installed on this DSM - any connection opened during the gap
+# SURVIVES the repair. Restart the agent to destroy its network namespace:
+#   sudo /usr/local/bin/docker restart hermes
+#
+# Check for gaps with:
+#   journalctl -u hermes-firewall.service | grep "CONTAINMENT WAS MISSING"
+
+[Unit]
+Description=Hourly re-apply of Hermes agent containment
+Requires=hermes-firewall.service
+
+[Timer]
+# First run shortly after boot, then every hour.
+OnBootSec=2min
+OnUnitActiveSec=1h
+
+# If the NAS was asleep or powered off when a run was due, run once on resume
+# rather than silently skipping the window.
+Persistent=true
+
+Unit=hermes-firewall.service
+
+[Install]
+WantedBy=timers.target

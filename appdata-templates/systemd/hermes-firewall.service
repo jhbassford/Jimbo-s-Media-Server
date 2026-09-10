@@ -1,0 +1,42 @@
+# Hermes containment - apply at boot and on demand.
+#
+# HOST PATH: /etc/systemd/system/hermes-firewall.service
+# Enable with: systemctl daemon-reload && systemctl enable --now hermes-firewall.service
+#
+# WHY SYSTEMD RATHER THAN DSM TASK SCHEDULER
+# The plan originally called for two Task Scheduler entries. That is GUI-only -
+# `synoschedtask` has no --add - which makes it unusable when the operator has no
+# remote access to DSM, and DSM swallows a non-zero exit unless "send run details
+# by email" is ticked. DSM 7 runs real systemd (219), so a unit + timer gives boot
+# coverage, hourly coverage, journal logging, and a visible exit status, without
+# touching DSM's own scheduled tasks in /etc/crontab.
+#
+# CAVEAT: a DSM major-version upgrade can remove custom units in
+# /etc/systemd/system. Re-install from appdata-templates/systemd/ after any such
+# upgrade, and confirm with:
+#   systemctl is-enabled hermes-firewall.service hermes-firewall.timer
+
+[Unit]
+Description=Hermes agent containment (iptables)
+Documentation=file:///volume1/docker/scripts/hermes-firewall.sh
+
+# The script hooks DOCKER-USER, which only exists once dockerd has built its
+# chains. Ordering after the package's dockerd unit avoids a first-boot race
+# where the hook silently lands nowhere.
+Wants=pkg-ContainerManager-dockerd.service
+After=pkg-ContainerManager-dockerd.service network-online.target
+
+# The script itself lives on volume1.
+RequiresMountsFor=/volume1/docker/scripts
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/volume1/docker/scripts/hermes-firewall.sh
+
+# The whole point of this unit is that a failure is LOUD. Do not mask it.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
