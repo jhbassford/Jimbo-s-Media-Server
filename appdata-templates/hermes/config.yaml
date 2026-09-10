@@ -144,7 +144,15 @@ security:
   # agent. Either install tirith, or do not count this layer. Left at defaults
   # deliberately, documented rather than pretended.
   tirith_enabled: true
-  tirith_fail_open: true
+  # Explicit path = authoritative. tirith_security.py never auto-downloads a
+  # replacement for a non-default path, so this both engages the scanner AND
+  # prevents Hermes installing a writable copy into /opt/data where the agent
+  # could tamper with it. Binary is root:root 0555 on a :ro mount.
+  tirith_path: "/opt/hermes-bin/tirith"
+  # Now that the scanner actually EXISTS, fail closed. Previously this had to
+  # stay true because tirith was absent and failing closed would have blocked
+  # every command. Revert to true if the scanner proves flaky.
+  tirith_fail_open: false
   # Defence in depth for the browser, which may not honour HTTP_PROXY the way
   # the Python HTTP stack does. The agent has no reason to browse this
   # household's own admin surfaces.

@@ -88,6 +88,21 @@ cdeny "append to .env"         sh -c 'echo x >> /opt/data/.env'
 cdeny "write to rootfs"        touch /usr/local/bin/pwn
 cdeny "write to /opt/hermes"   touch /opt/hermes/pwn
 
+echo "== cannot tamper with its own security scanner =="
+# tirith is mounted :ro from a root-owned 0555 file rather than auto-installed
+# into $HERMES_HOME/bin (= /opt/data), which the agent CAN write. Without this
+# the agent could overwrite the scanner that is meant to inspect its commands.
+callow "tirith present"      /opt/hermes-bin/tirith --version
+cdeny  "overwrite tirith"    sh -c 'echo x > /opt/hermes-bin/tirith'
+cdeny  "delete tirith"       rm -f /opt/hermes-bin/tirith
+# NOT a check that /opt/data/bin is unwritable -- it is the agent's own
+# workspace and is SUPPOSED to be writable (see "own data dir" above). The real
+# property is that the pinned path is what gets USED: tirith_security.py only
+# consults PATH and $HERMES_HOME/bin when tirith_path is the default literal
+# "tirith". With an explicit path it resolves that path and returns, so a file
+# planted at /opt/data/bin/tirith is never looked at. Assert the pin instead.
+callow "scanner path is pinned" sh -c 'hermes config get security.tirith_path | grep -q "^/opt/hermes-bin/tirith$"'
+
 echo "== cannot escalate =="
 cdeny "sudo present"        command -v sudo
 cdeny "write /etc/passwd"   sh -c 'echo x >> /etc/passwd'

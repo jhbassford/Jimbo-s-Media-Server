@@ -181,6 +181,15 @@ services:
     volumes:
       - $DOCKERDIR/appdata/hermes:/opt/data
       - /volume1/code:/opt/code
+      # tirith, the Rust pre-execution scanner (prompt-injection, credential
+      # exfil, terminal-injection patterns). Mounted READ-ONLY and root-owned,
+      # NOT auto-installed. Hermes auto-installs it to $HERMES_HOME/bin, which
+      # here is /opt/data -- the agent's own writable mount -- so a
+      # prompt-injected agent could overwrite its own scanner. tirith_security.py
+      # states an explicit (non-"tirith") tirith_path is authoritative and is
+      # never auto-replaced, so pinning the path disables the download entirely.
+      # Binary verified against the release checksums.txt before installing.
+      - $DOCKERDIR/appdata/hermes-bin:/opt/hermes-bin:ro
       # $DOCKERDIR/appdata/hermes-etc/{passwd,group}: edited copies of the
       # image's own /etc/passwd + /etc/group (hermes remapped 10000:10000
       # -> 1000:10; see deviation 5 above). REQUIRED ownership/mode on the
