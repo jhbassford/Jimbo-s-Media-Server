@@ -75,7 +75,7 @@ Do **not** enable Sheets, Slides, Chat, Forms or Tasks. Spec §11 puts them out 
 **APIs & Services → Credentials → Create Credentials → OAuth 2.0 Client ID.**
 Application type: **Web application** (not Desktop — this server receives the callback on a real HTTPS URL, and Desktop clients cannot register one).
 
-Authorised redirect URI — add exactly one, and note the hostname is decided here and reused in Task 6:
+Authorised redirect URI — add exactly one, and note the hostname is decided here and reused in Task 5:
 
 ```
 https://gws.bassford.net/oauth2callback
@@ -564,7 +564,16 @@ and under `services:`:
           - url: "http://192.168.94.11:8000"
 ```
 
-Traefik's file provider hot-reloads; no restart needed.
+Traefik's file provider hot-reloads `apps.yml`, so the *route* needs no restart. The **container does** — a running container does not join a new network without being recreated, and skipping this makes consent fail with no obvious cause:
+
+```bash
+./pull.sh && git status --short
+./push.sh
+ssh nas 'cd /volume1/docker && sudo /usr/local/bin/docker compose up -d hermes-google-mcp'
+ssh nas 'sudo /usr/local/bin/docker inspect hermes-google-mcp --format="{{range \$k,\$v := .NetworkSettings.Networks}}{{\$k}}={{\$v.IPAddress}} {{end}}"'
+```
+
+Expected: all three networks listed, including `hermes_ingress=192.168.94.11`. Do not open the browser until this prints.
 
 - [ ] **Step 4: Complete consent in the browser**
 
@@ -844,8 +853,18 @@ Read the existing script first and follow its pattern. Remember: **the NAS's `py
 ```bash
 # Extract the mcp_servers block and diff it against the golden copy.
 # awk, not python+yaml -- see the plan's Global Constraints.
+#
+# The flag is cleared BEFORE printing, not after. The obvious ordering
+# (`f{print}` then `f=0`) emits the first line of the NEXT top-level block
+# before the flag clears, so an unrelated edit to whatever key follows
+# mcp_servers reports as drift here. A guardrail that cries wolf trains the
+# operator to ignore it, which is worse than not having it.
 extract_mcp() {
-  awk '/^mcp_servers:/{f=1} f{print} f && /^[a-z_]+:/ && !/^mcp_servers:/{f=0}' "$1"
+  awk '
+    /^mcp_servers:/ { f = 1; print; next }
+    f && /^[^[:space:]#]/ { f = 0 }
+    f { print }
+  ' "$1"
 }
 if ! diff <(extract_mcp "$LIVE_CONFIG") <(extract_mcp "$GOLDEN_CONFIG") >/dev/null; then
   echo "GUARDRAIL DRIFT: mcp_servers block differs from golden copy"
@@ -904,9 +923,16 @@ Append to `hermes-threat-model.sh`, before the final tally, using the existing `
 ```bash
 echo "== cannot reach the Google credential (spec 2026-09-10 section 4) =="
 # The entire design exists to make this true. /opt/data holds no Google token.
-cdeny "no /credentials path"        ls /credentials
-cdeny "no google token in /opt/data" sh -c 'find /opt/data -iname "*google*" -o -iname "*token*.json" | grep -q .'
-cdeny "no client_secret readable"   sh -c 'find / -name "client_secret*.json" 2>/dev/null | grep -q .'
+# NOTE ON cdeny AND TIMEOUTS: cdeny treats command FAILURE as PASS, so any
+# check that can time out can pass without having looked. An unbounded
+# `find /` under `timeout 8` is exactly that -- it reports containment it
+# never verified. Every path below is bounded and deterministic. The
+# authoritative check that no Google mount exists at all is the mount-list
+# assertion in Task 4 Step 5; these confirm it from the inside.
+cdeny "no /credentials path"         ls /credentials
+cdeny "no /config path"              ls /config
+cdeny "no client_secret in /config"  cat /config/client_secret.json
+cdeny "no google token in /opt/data" sh -c 'find /opt/data -maxdepth 3 \( -iname "*google*" -o -iname "*token*.json" -o -iname "*credential*" \) | grep -q .'
 
 echo "== still cannot reach Google directly (Hermes egress unchanged) =="
 # The MCP container talks to Google; Hermes must not. If this starts passing,
