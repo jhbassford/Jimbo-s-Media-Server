@@ -149,3 +149,15 @@ services:
         ipv4_address: 192.168.92.3
       hermes_google:
         ipv4_address: 192.168.95.10
+      # Present ONLY so Traefik can reach this container during the OAuth
+      # consent flow. Being on the network is not the same as being routable:
+      # the `gws-rtr-file` router in apps.yml is added for consent and REMOVED
+      # afterwards, so this container normally has no internet-facing surface
+      # at all (spec §8). Token refresh does not need the callback.
+      #
+      # This does end hermes_ingress's two-member property. It grants no new
+      # capability: Hermes already reaches this container on hermes_net, and the
+      # property that actually mattered — Hermes not sharing a network with
+      # Portainer and Dozzle on t3_proxy — is untouched.
+      hermes_ingress:
+        ipv4_address: 192.168.94.11

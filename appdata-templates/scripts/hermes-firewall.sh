@@ -171,7 +171,13 @@ GOOGLE_MCP=192.168.92.3        # Google Workspace MCP server (spec 2026-09-10)
 # other: the googleapis-only Tinyproxy on hermes_google. Both of its addresses
 # are listed because a multi-homed container's choice of source interface is not
 # guaranteed - the same reason HERMES_IPS lists three.
-GOOGLE_MCP_IPS="192.168.92.3 192.168.95.10"
+# All THREE addresses, for the same reason HERMES_IPS lists three: a multi-homed
+# container's choice of source interface is not guaranteed. 192.168.94.11 is its
+# hermes_ingress address, present only so Traefik can reach it during OAuth
+# consent. Egress bound to that interface was measured as already failing on
+# routing alone — but "blocked by accident of routing" is not a control, so it
+# is dropped by rule as well.
+GOOGLE_MCP_IPS="192.168.92.3 192.168.95.10 192.168.94.11"
 GOOGLE_EGRESS_PROXY=192.168.95.2
 
 log() {
