@@ -163,7 +163,30 @@ blocked, and they are why "Drive read-only" is enforced at two layers here.
 
 ## Send-gate spike (Task 8)
 
-Result: PENDING.
+**Result: branch B — send is NOT exposed.** Resolved from source rather than by
+sending a live email.
+
+The spike question was whether `approvals.mode` intercepts MCP tool calls. It does
+not. Hermes has a SEPARATE MCP trust gate,
+`tools/mcp_tool_handlers.py:_trust_gate_check`, which fires only when a server is
+configured `trust: untrusted`; the default is full trust
+(`_core._server_trust_levels.get(server_name, _TRUST_FULL)`, and `mcp_tool.py`
+line ~454). Our `google` block sets no `trust`, so no MCP tool call is gated by it.
+
+The trust gate is the wrong shape anyway: it gates EVERY write-capable tool on
+the server (anything without `readOnlyHint=true`), which would include
+`draft_gmail_message` and `manage_event` — both of which spec §6 deliberately
+leaves ungated. There is no per-tool lever.
+
+So send is withheld at both layers:
+- `WORKSPACE_MCP_DISABLED_TOOLS` now includes `send_gmail_message`. Confirmed
+  live: the server logs `Block list: disabling tool 'send_gmail_message'`, and
+  `hermes mcp test google` discovers **23** tools (24 minus send).
+- `mcp_servers.google.tools.include` omits it, so the agent is offered 21.
+
+A real send gate is spec §6's shim — its own Telegram bot token Hermes cannot
+see, nonce to Telegram only, single-use and time-boxed. Deferred as its own
+piece of work; drafts remain available and ungated, which is most of the value.
 
 ## Live verification (2026-09-10, against the running container)
 

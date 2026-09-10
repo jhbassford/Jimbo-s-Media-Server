@@ -158,7 +158,17 @@ services:
       # manage_drive_access, get_drive_shareable_link and
       # check_drive_file_public_access: together they are the public-link
       # exfiltration path spec section 2 requires to be ABSENT, not blocked.
-      WORKSPACE_MCP_DISABLED_TOOLS: "batch_modify_gmail_message_labels,modify_gmail_message_labels,manage_gmail_label,manage_gmail_filter,create_calendar,manage_focus_time,manage_out_of_office,set_drive_file_permissions,manage_drive_access,get_drive_shareable_link,check_drive_file_public_access,get_drive_file_download_url,create_drive_file,create_drive_folder,copy_drive_file,update_drive_file,import_to_google_doc,import_to_google_sheets,import_to_google_slides,create_doc,batch_update_doc,modify_doc_text,find_and_replace_doc,insert_doc_elements,insert_doc_image,create_table_with_data,manage_doc_tab,update_doc_headers_footers,update_paragraph_style,debug_docs_runtime_info,debug_table_structure"
+      #
+      # send_gmail_message is disabled HERE as well as excluded from Hermes'
+      # tools.include (config.yaml), so both layers agree. Resolved from source
+      # 2026-09-10: Hermes does NOT route MCP tool calls through approvals.mode.
+      # Its separate MCP trust gate (tools/mcp_tool_handlers.py:_trust_gate_check)
+      # fires only for a server configured `trust: untrusted`, and that would gate
+      # EVERY write-capable tool -- drafts and calendar events included -- which
+      # spec section 6 does not want (drafts are deliberately ungated). So send is
+      # withheld at both layers, and a real send gate is the spec section 6 shim,
+      # deferred as its own piece of work.
+      WORKSPACE_MCP_DISABLED_TOOLS: "send_gmail_message,batch_modify_gmail_message_labels,modify_gmail_message_labels,manage_gmail_label,manage_gmail_filter,create_calendar,manage_focus_time,manage_out_of_office,set_drive_file_permissions,manage_drive_access,get_drive_shareable_link,check_drive_file_public_access,get_drive_file_download_url,create_drive_file,create_drive_folder,copy_drive_file,update_drive_file,import_to_google_doc,import_to_google_sheets,import_to_google_slides,create_doc,batch_update_doc,modify_doc_text,find_and_replace_doc,insert_doc_elements,insert_doc_image,create_table_with_data,manage_doc_tab,update_doc_headers_footers,update_paragraph_style,debug_docs_runtime_info,debug_table_structure"
       # Egress: everything to Google goes through the googleapis-only allowlist
       # proxy. The DOCKER-USER rules keyed to this container's two source IPs
       # are the enforcement; this is only the instruction.

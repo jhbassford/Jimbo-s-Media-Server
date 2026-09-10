@@ -118,6 +118,39 @@ echo "== cannot escalate =="
 cdeny "sudo present"        command -v sudo
 cdeny "write /etc/passwd"   sh -c 'echo x >> /etc/passwd'
 
+echo "== Google credential boundary (spec 2026-09-10 section 4) =="
+# The whole design exists to make these true: /opt/data holds no Google token.
+# Checks stay bounded and deterministic on purpose -- cdeny treats command
+# FAILURE as pass, so a check that can time out can pass without looking.
+cdeny "no /credentials path"        ls /credentials
+cdeny "no /config path"             ls /config
+cdeny "no client_secret in /config" cat /config/client_secret.json
+cdeny "no google token in /opt/data" sh -c 'find /opt/data -maxdepth 3 -type f \( -iname "*google*.json" -o -iname "*token*.json" -o -iname "*client_secret*" \) 2>/dev/null | grep -q .'
+# The bundled google-workspace skill writes google_token.json / client secret
+# under HERMES_HOME (= /opt/data here) -- the credential-in-the-blast-radius
+# shape spec section 2 rejected. It must not be offered to the agent.
+callow "bundled google skill disabled" sh -c 'hermes skills list 2>/dev/null | grep "google-workspace" | grep -q "disabled"'
+
+echo "== still cannot reach Google directly (Hermes egress unchanged) =="
+# The MCP container talks to Google; Hermes must not. If either starts passing,
+# someone added googleapis to Hermes' own filter -- which the design forbids.
+cdeny  "direct googleapis"   sh -c 'curl -s --max-time 8 -x http://192.168.92.2:8888 https://www.googleapis.com/discovery/v1/apis'
+cdeny  "google egress proxy" sh -c 'curl -s --max-time 8 -x http://192.168.95.2:8888 https://www.googleapis.com/discovery/v1/apis'
+callow "mcp reachable"       sh -c 'curl -s -o /dev/null --max-time 8 http://192.168.92.3:8000/health'
+
+echo "== MCP allowlist matches policy, and send is not exposed (section 6) =="
+# Fails loudly if an upstream bump adds a writer. send_gmail_message is withheld
+# at both layers (Task 8 branch B, resolved from source 2026-09-10: approvals.*
+# does NOT gate MCP calls, and the MCP trust gate would gate every write tool).
+callow "mcp handshake"       sh -c 'hermes mcp test google 2>/dev/null | grep -q "Connected"'
+callow "21 tools selected"   sh -c 'hermes mcp list 2>/dev/null | grep -q "21 selected"'
+cdeny  "no send/share tools" sh -c 'hermes mcp test google 2>/dev/null | grep -qE "send_gmail_message|set_drive_file_permissions|manage_drive_access|get_drive_shareable_link|check_drive_file_public_access"'
+
+echo "== mail is not read unattended (section 7.1) =="
+callow "unattended denies" sh -c 'hermes config get approvals.unattended_mode | grep -q "^deny$"'
+callow "cron denies"       sh -c 'hermes config get approvals.cron_mode | grep -q "^deny$"'
+callow "no scheduled mail" sh -c '! hermes cron list 2>/dev/null | grep -qiE "gmail|mail|inbox|brief"'
+
 echo
 echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ] && echo "CONTAINED: spec section 5 criterion holds." \

@@ -211,6 +211,22 @@ skills:
   # trusted_project_dirs; belt and braces.
   project_discovery: false
   trusted_project_dirs: []
+  # Bundled skills disabled by operator choice. google-workspace is the
+  # important one: its scripts (scripts/google_api.py) read and write
+  # google_token.json / google_client_secret.json under HERMES_HOME, i.e. inside
+  # this container's writable /opt/data mount -- the exact credential-in-the-
+  # blast-radius shape spec section 2 rejected. Google access is provided by the
+  # isolated MCP server instead; the skill is left present but not offered, and
+  # skills.* is one of the sections hermes-guardrail-check.sh diffs.
+  disabled:
+    - airtable
+    - box
+    - codex
+    - notion
+    - obsidian
+    - opencode
+    - teams-meeting-pipeline
+    - google-workspace
 
 browser:
   # `browser.enabled` DOES NOT EXIST and was removed - the schema has `backend`,
