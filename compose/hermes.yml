@@ -247,6 +247,19 @@ services:
       #     hermes-firewall.service). Model changes are ignored; security keys
       #     are not.
       - $DOCKERDIR/appdata/hermes-etc/hermes.env:/opt/data/.env:ro
+      # ENVIRONMENT.md: the agent-facing manifest of its own containment — the
+      # egress allowlist, why its DNS is blocked, that TLS is NOT intercepted,
+      # what persists, what is deliberately absent. Written because every fact
+      # the agent lacks costs a failed attempt AND a wrong diagnosis: it read
+      # the deliberate DNS block (hermes-firewall.sh) as a flaky resolver bug
+      # and went looking for a proxy CA that does not exist.
+      #
+      # Mounted :ro from hermes-etc, NOT written into the read-write /opt/data,
+      # for the same reason config.yaml and .env are: a description of the
+      # agent's own containment that the agent can rewrite is a channel for a
+      # prompt-injected agent to lie to its successor. Costs nothing to close.
+      # Source of truth: appdata-templates/hermes/ENVIRONMENT.md.
+      - $DOCKERDIR/appdata/hermes-etc/ENVIRONMENT.md:/opt/data/ENVIRONMENT.md:ro
     environment:
       PUID: 1000
       PGID: 10
@@ -269,6 +282,42 @@ services:
       # passes it through intact. Not a secret, so nothing is lost by it being
       # visible in `docker inspect`.
       HERMES_WRITE_SAFE_ROOT: "/opt/data:/opt/code"
+      # PATH is set in full because assigning it here REPLACES the image's
+      # value rather than extending it — the first eight entries are the
+      # image's own PATH verbatim (read back live with `docker exec hermes sh
+      # -c 'echo $PATH'` against digest a62824a4ec6f), with /opt/hermes-bin
+      # APPENDED. Appended, not prepended: nothing here should shadow a system
+      # binary. Re-read the image's PATH on any digest bump — a dropped
+      # /opt/hermes/.venv/bin would break the agent silently.
+      #
+      # /opt/hermes-bin is the root-owned 0555 READ-ONLY mount that already
+      # carries tirith; jq now lives there too. The agent asked for jq on
+      # /opt/data/bin and correctly flagged that a writable dir on PATH is a
+      # binary-shadowing class of attack. Putting it on the ro mount removes
+      # the trade instead of mitigating it. NOTE: /opt/data/.local/bin is
+      # ALREADY on the image's PATH ahead of /usr/bin, so that exposure exists
+      # regardless — one more reason not to add a second writable PATH entry.
+      PATH: "/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/hermes-bin"
+      # Caches and scratch redirected off the 64 MB noexec /tmp tmpfs onto the
+      # persistent mount. Without these, uv/npm/pip fail on the read-only root
+      # or blow the tmpfs on a single large wheel, and the agent re-downloads
+      # everything after every restart.
+      #
+      # Deliberately /opt/data/.cache (dotted) — /opt/data/cache is Hermes' OWN
+      # cache (openrouter_model_metadata.json, reasoning_caps.json, ...) and
+      # colliding with it would be a debugging trap.
+      #
+      # Accepted, knowingly: /opt/data is exec-capable, so TMPDIR here does not
+      # inherit /tmp's noexec. That control was already only half a control —
+      # /opt/data has always been writable AND executable, which is why tirith
+      # is pinned to the :ro mount. This changes no capability the agent did
+      # not already have; it just stops the failures.
+      XDG_CACHE_HOME: /opt/data/.cache
+      UV_CACHE_DIR: /opt/data/.cache/uv
+      UV_PYTHON_INSTALL_DIR: /opt/data/.cache/uv-python
+      PIP_CACHE_DIR: /opt/data/.cache/pip
+      npm_config_cache: /opt/data/.cache/npm
+      TMPDIR: /opt/data/tmp
     networks:
       # NOT t3_proxy - see the hermes_ingress comment in docker-compose.yml.
       hermes_ingress:

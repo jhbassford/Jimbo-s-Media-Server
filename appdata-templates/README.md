@@ -26,6 +26,7 @@ back into an advisory one, with no error anywhere. Copy the file, then run the
 | `hermes/group` | `/volume1/docker/appdata/hermes-etc/group` | `root:root` | `0644` |
 | `hermes/config.yaml` | `/volume1/docker/appdata/hermes-etc/config.yaml` | `root:root` | `0644` |
 | `hermes/hermes.env` | `/volume1/docker/appdata/hermes-etc/hermes.env` | `root:10` | `0640` |
+| `hermes/ENVIRONMENT.md` | `/volume1/docker/appdata/hermes-etc/ENVIRONMENT.md` | `root:root` | `0644` |
 | `hermes-egress/tinyproxy.conf` | `/volume1/docker/appdata/hermes-egress/tinyproxy.conf` | `root:root` | `0644` |
 | `hermes-egress/filter` | `/volume1/docker/appdata/hermes-egress/filter` | `root:root` | `0644` |
 | `scripts/hermes-firewall.sh` | `/volume1/docker/scripts/hermes-firewall.sh` | `root:root` | `0750` |
@@ -35,7 +36,10 @@ Directories:
 | NAS path | Owner | Mode | Notes |
 |---|---|---|---|
 | `/volume1/docker/appdata/hermes-etc` | `root:root` | `0755` | read-only mount sources; the agent must never own this |
+| `/volume1/docker/appdata/hermes-bin` | `root:root` | `0755` | read-only tool mount (`/opt/hermes-bin`); see below |
 | `/volume1/docker/appdata/hermes` | `1000:10` | `0700` | the agent's read-write state (`/opt/data`) |
+| `/volume1/docker/appdata/hermes/.cache` | `1000:10` | `0755` | tool caches (uv/pip/npm/XDG); **dotted** — `hermes/cache` is Hermes' own |
+| `/volume1/docker/appdata/hermes/tmp` | `1000:10` | `0755` | `TMPDIR`; keeps large wheels off the 64 MB `/tmp` tmpfs |
 | `/volume1/docker/appdata/hermes-egress` | `root:root` | `0755` | |
 | `/volume1/docker/scripts` | `root:root` | `0755` | |
 | `/volume1/code` | `1000:10` | `0755` | the coding role's workspace (`/opt/code`) |
@@ -71,7 +75,7 @@ Directories:
 # hermes-etc (create the directory root-owned FIRST — see the warning below)
 ssh nas 'sudo mkdir -p /volume1/docker/appdata/hermes-etc && sudo chown root:root /volume1/docker/appdata/hermes-etc && sudo chmod 0755 /volume1/docker/appdata/hermes-etc'
 
-for f in passwd group config.yaml; do
+for f in passwd group config.yaml ENVIRONMENT.md; do
   ssh nas "cat > /tmp/$f" < "appdata-templates/hermes/$f"
   ssh nas "sudo install -o root -g root -m 0644 /tmp/$f /volume1/docker/appdata/hermes-etc/$f && rm -f /tmp/$f"
 done
@@ -95,6 +99,28 @@ ssh nas 'sudo install -o root -g root -m 0750 /tmp/hermes-firewall.sh /volume1/d
 ssh nas 'sudo mkdir -p /volume1/docker/appdata/hermes /volume1/code \
   && sudo chown -R 1000:10 /volume1/docker/appdata/hermes /volume1/code \
   && sudo chmod 0700 /volume1/docker/appdata/hermes'
+
+# tool caches + TMPDIR (see the compose environment block). Owned by the agent
+# — these are the only two directories under hermes/ this README creates, and
+# the dot on .cache matters: hermes/cache is Hermes' own.
+ssh nas 'sudo mkdir -p /volume1/docker/appdata/hermes/.cache /volume1/docker/appdata/hermes/tmp \
+  && sudo chown 1000:10 /volume1/docker/appdata/hermes/.cache /volume1/docker/appdata/hermes/tmp \
+  && sudo chmod 0755 /volume1/docker/appdata/hermes/.cache /volume1/docker/appdata/hermes/tmp'
+
+# read-only tool mount. NOT in git — these are binaries, and tirith is ~38 MB.
+# Fetch on the NAS, verify against the publisher's own checksum file, THEN
+# install root-owned and non-writable. Never install a binary the agent will
+# later execute into a directory the agent can write.
+ssh nas 'sudo mkdir -p /volume1/docker/appdata/hermes-bin && sudo chown root:root /volume1/docker/appdata/hermes-bin && sudo chmod 0755 /volume1/docker/appdata/hermes-bin'
+
+# jq 1.7.1 (x86_64). /tmp on this NAS is noexec, so the binary cannot be
+# smoke-tested before install — test it inside the container afterwards.
+ssh nas 'cd /tmp \
+  && curl -fsSL -o jq-linux-amd64 https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64 \
+  && curl -fsSL -o jq-sha256.txt https://github.com/jqlang/jq/releases/download/jq-1.7.1/sha256sum.txt \
+  && grep -E "jq-linux-amd64$" jq-sha256.txt | sha256sum -c - \
+  && sudo install -o root -g root -m 0555 jq-linux-amd64 /volume1/docker/appdata/hermes-bin/jq \
+  && rm -f jq-linux-amd64 jq-sha256.txt'
 ```
 
 > **WARNING — create every bind-mount target before `docker compose up`.**
@@ -115,18 +141,84 @@ files means the container starts *already* at `1000:10` with no privilege
 transition attempted at all.
 
 ### `hermes/config.yaml`
-Every spec §4.7 control. Mounted `:ro` at `/opt/data/config.yaml`, deliberately
-**not** inside `/volume1/docker/appdata/hermes`, which is the read-write
-`/opt/data` mount — otherwise a prompt-injected agent could rewrite its own
-guardrails and restart itself through the socket proxy to load them. Changing
-any control is an operator action on the host plus a restart. That is the point.
-The file itself records which key names are verified against the running image
-and which are not.
+Every spec §4.7 control. The file itself records which key names are verified
+against the running image and which are not.
+
+**This is no longer a read-only bind mount, and this section previously said it
+was.** A bind-mounted *file* can never be atomically replaced (`os.replace` →
+`Errno 16`), so the dashboard's model picker could not persist and Hermes fell
+back to `copyfile`. It is now copied into `/volume1/docker/appdata/hermes/` and
+is a normal writable file at `/opt/data/config.yaml`; the copy here in
+`hermes-etc` is the source it is seeded from, alongside a root-owned
+`config.yaml.golden` the agent can neither read nor write.
+
+That knowingly reopens the first leg of review finding C3 — the agent *can*
+rewrite its own guardrails. Two things hold it down: `hermes` is not in the
+socket proxy's restart allowlist, so it cannot reload a config it has
+tampered with (a change takes effect only at the next operator restart), and
+`hermes-guardrail-check.sh` diffs it hourly against the golden copy, ignoring
+model changes and alarming on security keys.
 
 ### `hermes/hermes.env`
 Secrets, mounted `:ro` at `/opt/data/.env`. **Template only** — every value is a
 placeholder; real values are written on the NAS in plan Task 6 and never
 committed.
+
+### `hermes/ENVIRONMENT.md`
+The agent-facing manifest of its own containment, mounted `:ro` at
+`/opt/data/ENVIRONMENT.md`: the egress allowlist in full, why its DNS is
+blocked, that TLS is **not** intercepted, what persists across restarts, the
+resource caps that this kernel does and does not enforce, and what is
+deliberately absent (browsing, OpenAI, `sudo`, `wget`).
+
+Written because an undocumented control is indistinguishable from a bug: the
+agent read the deliberate DNS block as a flaky resolver, and went hunting for a
+proxy CA that does not exist. Each missing fact cost a failed attempt *and* a
+wrong diagnosis.
+
+Read-only for the same reason as `.env`: a description of the agent's own
+containment that the agent can rewrite is a channel for a prompt-injected agent
+to lie to its successor. **Update the `LAST VERIFIED` date in the header
+whenever the allowlist, mounts, caps or absences change** — the date is the
+contract that tells the agent whether to trust the contents.
+
+> **TRAP — do not use `install` to update this file on a running container.**
+> It is a bind-mounted **file**, and the mount is pinned to the *inode* that
+> existed when the container started. `install` (like `mv`, and like any
+> atomic-replace) unlinks the original and creates a **new** inode: the host
+> file updates, and the container keeps reading the old, now-unlinked one, with
+> no error anywhere. Measured here: host showed 260 lines while
+> `docker exec hermes wc -l` still showed 247.
+>
+> Update it **in place**, which truncates and rewrites the same inode:
+>
+> ```bash
+> ssh nas 'sudo tee /volume1/docker/appdata/hermes-etc/ENVIRONMENT.md > /dev/null' \
+>   < appdata-templates/hermes/ENVIRONMENT.md
+> ```
+>
+> In-place writes preserve owner and mode, so no `chown`/`chmod` is needed. If
+> you already replaced the inode, only `docker restart hermes` re-resolves the
+> mount. The same hazard applies to every file bind mount here — `passwd`,
+> `group`, `hermes.env` — and it is the same `Errno 16` property that forced
+> `config.yaml` out of a bind mount in the first place.
+
+### `hermes-bin/` (not in git — binaries)
+Root-owned `0555` tools on a read-only mount at `/opt/hermes-bin`, appended to
+the container's `PATH`. Currently `tirith` (the pre-execution scanner) and `jq`.
+
+Both are here rather than in `/opt/data/bin` for the same reason: Hermes
+*auto-installs* tirith to `$HERMES_HOME/bin`, which resolves to the agent's own
+writable mount, so a prompt-injected agent could overwrite its own scanner.
+Pinning `security.tirith_path` to an explicit non-default path disables that
+download entirely. The same argument applies to every future tool — **never
+install a binary the agent will execute into a directory the agent can write.**
+Note `/opt/data/.local/bin` is already on the image's stock `PATH` ahead of
+`/usr/bin`, which is exactly why a second writable `PATH` entry is not worth
+adding.
+
+Verify each binary against the publisher's own checksum file before installing;
+the install commands above do this for `jq`.
 
 ### `hermes-egress/tinyproxy.conf`, `hermes-egress/filter`
 The domain allowlist and the proxy config that enforces it. The plan's Task 2
@@ -155,7 +247,18 @@ Compare against the manifest above. Then confirm the agent genuinely cannot
 write its own guardrails:
 
 ```bash
-ssh nas 'sudo /usr/local/bin/docker exec -u 1000:10 hermes sh -c "echo x >> /opt/data/config.yaml; echo x >> /opt/data/.env"'
+ssh nas 'sudo /usr/local/bin/docker exec -u 1000:10 hermes sh -c "echo x >> /opt/data/.env; echo x >> /opt/data/ENVIRONMENT.md; echo x >> /opt/hermes-bin/jq"'
 ```
 
-Expected: `Permission denied` for both.
+Expected: `Permission denied` for all three. (`/opt/data/config.yaml` is
+**writable** by design — see its section above — so it is deliberately not in
+this list.)
+
+Then confirm the tool mount and caches resolved:
+
+```bash
+ssh nas 'sudo /usr/local/bin/docker exec hermes sh -c "command -v jq && jq --version && echo \$UV_CACHE_DIR && head -1 /opt/data/ENVIRONMENT.md"'
+```
+
+Expected: `/opt/hermes-bin/jq`, `jq-1.7.1`, `/opt/data/.cache/uv`, and the
+manifest's first heading.
