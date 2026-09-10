@@ -74,9 +74,28 @@ services:
   #   5. `cpus:` and `pids_limit` omitted -- unavailable on this DSM 4.4.302
   #      kernel. Same reasoning as compose/hermes.yml deviations 1 and 2.
   hermes-google-mcp:
-    # Pinned by digest, resolved 2026-09-10 on the NAS from tag 1.26.0.
-    # Never substitute the tag. See google-mcp-image.md.
-    image: ghcr.io/taylorwilsdon/google_workspace_mcp@sha256:0ce26298d707ee1e213ca3c51ef814287b8d8c9c2a0abd9494f95f2adc07bc1d
+    # (Superseded: see the derived-image note below — pinned by ID, not digest.)
+
+    # LOCALLY BUILT from the pinned upstream digest, adding PySocks and nothing
+    # else. Source of truth: /volume1/docker/build/hermes-google-mcp/Dockerfile
+    # on the NAS (its header records the full reasoning).
+    #
+    # Upstream base: ghcr.io/taylorwilsdon/google_workspace_mcp@sha256:0ce26298d707ee1e213ca3c51ef814287b8d8c9c2a0abd9494f95f2adc07bc1d
+    #
+    # Locally built images have no registry digest, so this is pinned by IMAGE
+    # ID. Rebuilding produces a NEW id -- update this line when you do, and
+    # re-run the threat-model suite.
+    #
+    # WHY the derived image exists (deviation 6): httplib2 -- which
+    # google-api-python-client uses for EVERY Google API call -- has no proxy
+    # support unless PySocks is importable, and the upstream image does not
+    # ship it (`httplib2.socks` is None). Without it httplib2 silently ignores
+    # HTTPS_PROXY, connects directly, needs DNS, and dies with "Unable to find
+    # the server at www.googleapis.com" because external DNS is blocked here by
+    # design. Measured on the upstream image: the OAuth token exchange
+    # (requests/oauthlib, which DOES honour the proxy) succeeded, then the
+    # userinfo fetch failed -- and every tool call would have failed identically.
+    image: sha256:7b6c53b02eb8d1d661bf26ef894dc3a5f04a72595c7a4922b400364e380a7826
     container_name: hermes-google-mcp
     restart: unless-stopped
     working_dir: /app
@@ -136,6 +155,12 @@ services:
       HTTPS_PROXY: http://192.168.95.2:8888
       HTTP_PROXY: http://192.168.95.2:8888
       NO_PROXY: 192.168.92.0/24,192.168.95.0/24,localhost,127.0.0.1
+      # Lowercase duplicates: several Python HTTP stacks (httplib2 among them)
+      # read only the lowercase names. Cheap insurance against a library that
+      # would otherwise bypass the allowlist by connecting directly.
+      https_proxy: http://192.168.95.2:8888
+      http_proxy: http://192.168.95.2:8888
+      no_proxy: 192.168.92.0/24,192.168.95.0/24,localhost,127.0.0.1
     volumes:
       # Credential store -- the OAuth token lands here. Root-owned parent, 0700,
       # owned by uid 1000 so the app can write it. NEVER mounted into hermes;
