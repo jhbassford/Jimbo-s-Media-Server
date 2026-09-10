@@ -176,26 +176,44 @@ Create `appdata-templates/hermes-google-egress/filter`. Tinyproxy `FilterExtende
 
 - [ ] **Step 2: Write the tinyproxy config**
 
-Create `appdata-templates/hermes-google-egress/tinyproxy.conf`. This is the working `hermes-egress` file with the ACL and filter path changed — including the four thread-pool directives without which tinyproxy refuses to start (`"StartServers" must be greater than zero`):
+Create `appdata-templates/hermes-google-egress/tinyproxy.conf`. **Derive it from `appdata-templates/hermes-egress/tinyproxy.conf` — read that file first and diff against it when done.** It is the proven-working config on this host; this one differs only in the ACL, and in pool sizes scaled to a single client. Do not write it from memory.
 
 ```
+# SOURCE OF TRUTH: this file (and ./filter beside it) is the checked-in copy of
+# /volume1/docker/appdata/hermes-google-egress/tinyproxy.conf. On a rebuild,
+# copy both verbatim to that NAS path.
+#
+# Derived from appdata-templates/hermes-egress/tinyproxy.conf. Differences, all
+# deliberate:
+#   Allow 192.168.95.0/24  -- NOT .92. Load-bearing: tinyproxy's ACL is
+#     source-IP based, so allowing the .92 net would let the Hermes agent use
+#     this proxy to reach Google and defeat the whole design.
+#   Pool sizes reduced (MaxClients 50->20, StartServers 5->2,
+#     MaxSpareServers 10->5) -- this proxy has exactly ONE client, the MCP
+#     container, where the other serves the agent itself.
+#   FilterURLs Off added -- explicit statement of intent; the filter matches
+#     CONNECT hostnames, never URL paths. Same as the default.
+# Everything else is byte-identical to the working file, including the
+# StartServers/MinSpare/MaxSpare/MaxRequestsPerChild block, without which
+# tinyproxy refuses to start ("StartServers" must be greater than zero).
 User nobody
 Group nogroup
 Port 8888
+Listen 0.0.0.0
 Timeout 600
 MaxClients 20
+Allow 192.168.95.0/24
+Filter "/etc/tinyproxy/filter"
+FilterDefaultDeny Yes
+FilterExtended On
+FilterCaseSensitive Off
+FilterURLs Off
+ConnectPort 443
+DisableViaHeader Yes
 StartServers 2
 MinSpareServers 2
 MaxSpareServers 5
 MaxRequestsPerChild 0
-LogLevel Info
-Allow 192.168.95.0/24
-ConnectPort 443
-FilterURLs Off
-FilterExtended On
-FilterCaseSensitive Off
-FilterDefaultDeny Yes
-Filter "/etc/tinyproxy/filter"
 ```
 
 `Allow 192.168.95.0/24` is the line that keeps Hermes out: it is on `192.168.92.0/24` and is therefore refused by source IP even if it discovers this proxy's address. `ConnectPort 443` alone means no CONNECT to any other port. `FilterDefaultDeny Yes` makes the filter an allowlist.
