@@ -736,7 +736,9 @@ control that fails open.
 > Verified after the switch: public request → **302** to Access with **no**
 > `Www-Authenticate: Basic` header, and origin-via-Traefik → **502** (Traefik now
 > passes through; Hermes is still failing closed with no auth provider set). That
-> 502 becomes a 401 from Hermes once the dashboard password is configured.
+> 502 becomes a **302 to `/login`** from Hermes once the dashboard password is
+> configured — Hermes serves a form login, not HTTP Basic, so 302 is the success
+> condition, not 401.
 >
 > **COMPLETE 2026-09-10.** CNAME created and verified (resolves to the Cloudflare
 > edge, same as other tunnelled hosts). Access application live: an
@@ -974,8 +976,14 @@ from "still failing closed":
 ssh nas 'sudo /usr/local/bin/docker exec traefik wget -qS -O /dev/null http://hermes:9119/ 2>&1 | head -3'
 ```
 
-Expected: `401 Unauthorized`. **`Connection refused` means the auth provider is
-still not registered** — the dashboard is not listening at all.
+Expected: **`302 Found`** with `Location: /login?next=%2F`. Hermes serves a
+**form login**, not HTTP Basic, so a 302 to `/login` is the success condition —
+**not** a 401. (`basic_auth` in the config names username/password auth, not the
+HTTP Basic scheme. An earlier revision of this plan said to expect 401; that was
+wrong and would have made a working deployment look broken.)
+
+`Connection refused` means the auth provider is still not registered — the
+dashboard is not listening at all. That is the real failure mode.
 
 - [ ] **Step 4: Write `config.yaml`**
 
@@ -1012,8 +1020,10 @@ ssh nas 'sudo /usr/local/bin/docker restart hermes && sleep 25'
 ssh nas 'sudo /usr/local/bin/docker exec traefik wget -qS -O /dev/null http://hermes:9119/ 2>&1 | head -3'
 ```
 
-Expected: `401 Unauthorized`. If it returns `200`, the dashboard is
-unauthenticated — **stop immediately** and fix before it is reachable. If the
+Expected: **`302` to `/login?next=%2F`** — Hermes serves a form login, not HTTP
+Basic, so 302 is success. If `/` returns `200` with no redirect the dashboard is
+unauthenticated — **stop immediately**. `Connection refused` means the auth
+provider was not accepted and the dashboard never bound.
 container logs "Refusing to bind dashboard to 0.0.0.0", the auth provider is
 still not configured — see the gap noted in Step 3.
 
