@@ -298,6 +298,20 @@ New assertions:
 - **Sheets, Slides, Chat, Forms, Tasks.** The server supports them; this design
   does not enable them. Adding a surface is a scope change, not a config tweak.
 - **Backups.** Per the settled decision of 2026-09-08, unchanged.
+- **Bitwarden Secrets Manager.** Raised 2026-09-10, deferred to its own project,
+  and one conclusion is settled: Hermes' **native** `secrets.bitwarden`
+  integration is rejected for this deployment. It puts `BWS_ACCESS_TOKEN` in
+  `hermes.env`, which the agent can read (mode `0640`, group 10 is the agent's
+  only group) — trading three scoped, individually revocable keys for one token
+  that fetches the whole project. It auto-downloads `bws` to `~/.hermes/bin/`,
+  which resolves to `/opt/data/bin` here, with **no configurable path** — the
+  tirith problem again, minus the `tirith_path` pin that solved it, on a binary
+  that handles secrets. And it would add `vault.bitwarden.com` to the egress
+  allowlist. BSM remains worth doing at the **operator layer** — materialising
+  `$DOCKERDIR/secrets/*` at deploy time from a host-side machine account whose
+  token never enters a container — which gains central rotation, audit and
+  per-integration revocation while leaving containment unchanged. When that
+  project happens, this design's `client_secret.json` becomes one of its inputs.
 
 ## 12. Open items for implementation
 
