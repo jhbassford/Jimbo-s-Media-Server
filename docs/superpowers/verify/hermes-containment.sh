@@ -65,12 +65,16 @@ chk "bridge gw 192.168.92.1"   deny http://192.168.92.1:9000/
 chk "bridge gw 192.168.90.1"   deny http://192.168.90.1:9000/
 chk "bridge gw 172.17.0.1"     deny http://172.17.0.1:9000/
 
-echo "== cannot reach the rest of t3_proxy (partial C1 mitigation) =="
+echo "== t3_proxy is unreachable BY CONSTRUCTION (finding C1 fixed) =="
+# The agent is no longer a member of t3_proxy at all - it sits on hermes_ingress,
+# a two-member network with only Traefik. These were previously enforced by a
+# firewall RETURN-allowlist; they are now simply not routable.
 chk "portainer via t3_proxy"   deny http://192.168.90.7:9000/
 chk "dozzle via t3_proxy"      deny http://192.168.90.9:8080/
 chk "radarr via t3_proxy"      deny http://192.168.90.3:7878/
 
-echo "== but its own two proxies still work =="
+echo "== but its own two proxies, and Traefik ingress, still work =="
+chk "traefik on hermes_ingress" allow http://192.168.94.254:80/
 chk "restricted socket proxy"  allow http://192.168.93.2:2375/version
 chk "egress proxy reachable"   allow http://192.168.92.2:8888/
 

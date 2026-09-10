@@ -26,6 +26,18 @@ networks:
     ipam:
       config:
         - subnet: 192.168.92.0/24
+  # Two-member network: Traefik + Hermes ONLY (review finding C1).
+  # Hermes previously sat on t3_proxy, which the spec treated as ingress-only.
+  # Docker bridges are bidirectional, so that also gave the agent direct reach to
+  # Portainer (backed by the PERMISSIVE socket proxy = container create = root on
+  # this NAS), an unauthenticated Dozzle, and every *arr API - all of them
+  # bypassing Traefik and its basic-auth middleware entirely.
+  hermes_ingress:
+    name: hermes_ingress
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.94.0/24
   pihole_network:
     name: pihole_network
     external: true

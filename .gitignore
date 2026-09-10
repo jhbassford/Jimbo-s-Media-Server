@@ -3,3 +3,7 @@ secrets/
 
 # NAS-side backup artifacts
 *.bak-*
+
+# Claude Code local scratch
+.claude/worktrees/
+.claude/settings.local.json

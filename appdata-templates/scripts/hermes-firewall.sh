@@ -145,15 +145,18 @@ CHAIN=HERMES-CONTAIN
 TAG=hermes-firewall
 
 # Hermes' static IPs, one per attached network. Must match compose/hermes.yml.
-#   192.168.90.10  t3_proxy      (ingress from Traefik)
+#   192.168.94.10  hermes_ingress (ingress from Traefik; a TWO-MEMBER network.
+#                  Hermes used to sit on t3_proxy, which also holds Portainer,
+#                  an unauthenticated Dozzle and every *arr API - finding C1.
+#                  It is off that network entirely now.)
 #   192.168.92.10  hermes_net    (egress via the Tinyproxy allowlist)
 #   192.168.93.10  hermes_socket (restricted docker socket proxy)
-HERMES_IPS="192.168.90.10 192.168.92.10 192.168.93.10"
+HERMES_IPS="192.168.94.10 192.168.92.10 192.168.93.10"
 
 # The only destinations the agent may initiate to.
 EGRESS_PROXY=192.168.92.2      # Tinyproxy - its one way out
 SOCKET_PROXY=192.168.93.2      # restricted docker socket proxy (read + scoped restart)
-TRAEFIK=192.168.90.254         # t3_proxy ingress peer
+TRAEFIK=192.168.94.254         # Traefik on hermes_ingress (its only peer there)
 
 log() {
 	echo "$(date '+%Y-%m-%d %H:%M:%S') [$TAG] $*"
@@ -189,14 +192,11 @@ for ip in $HERMES_IPS; do
 	# Permitted, and nothing else: its own egress proxy, the restricted socket
 	# proxy, and Traefik.
 	#
-	# NOTE - this deliberately allows only 192.168.90.254 on t3_proxy, not the
-	# whole 192.168.90.0/24 the plan originally specified. That /24 also holds
-	# Portainer, an unauthenticated Dozzle and every *arr API, all reachable
-	# without passing Traefik's basic-auth middleware (review finding C1;
-	# Docker bridges are bidirectional). This is a PARTIAL, firewall-only
-	# mitigation and is NOT a substitute for moving Hermes off the shared
-	# t3_proxy network, which remains the real fix and is the operator's call
-	# because it means restarting Traefik.
+	# Traefik is 192.168.94.254 on hermes_ingress, a TWO-MEMBER network. This
+	# was previously a firewall-only partial mitigation for finding C1, back
+	# when hermes still sat on the shared t3_proxy. That is now fixed properly
+	# at the topology level: the agent is not on t3_proxy at all, so Portainer,
+	# Dozzle and the *arr APIs are unreachable by construction, not by rule.
 	for dst in "$EGRESS_PROXY" "$SOCKET_PROXY" "$TRAEFIK"; do
 		$IPT -A "$CHAIN" -s "$ip" -d "$dst" -j RETURN \
 			|| die "cannot add RETURN $ip -> $dst"

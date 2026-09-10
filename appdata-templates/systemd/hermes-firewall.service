@@ -31,7 +31,16 @@ RequiresMountsFor=/volume1/docker/scripts
 
 [Service]
 Type=oneshot
-RemainAfterExit=yes
+# DELIBERATELY NOT RemainAfterExit=yes.
+# With it, the unit stays "active (exited)" forever after the first run, and
+# systemd treats `start` on an already-active unit as a NO-OP. That silently
+# breaks BOTH re-apply paths: `systemctl start` does nothing, and - far worse -
+# the hourly timer, which activates this unit by starting it, would never run
+# the script again. Measured, not theorised: after moving the agent to a new
+# network, `systemctl start` reported success while the live chain still held
+# the old IP, leaving the new interface uncontained.
+# Without it the unit returns to inactive after each run, so every subsequent
+# start genuinely re-executes. Use `systemctl restart` to force a run by hand.
 ExecStart=/volume1/docker/scripts/hermes-firewall.sh
 
 # The whole point of this unit is that a failure is LOUD. Do not mask it.

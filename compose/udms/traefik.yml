@@ -11,6 +11,10 @@ services:
       t3_proxy:
         ipv4_address: 192.168.90.254 # You can specify a static IP
       socket_proxy:
+      # Two-member network shared ONLY with hermes, so the agent can be reached
+      # by Traefik without being able to reach the rest of t3_proxy (finding C1).
+      hermes_ingress:
+        ipv4_address: 192.168.94.254
     command: # CLI arguments
       - --global.checkNewVersion=true
       - --global.sendAnonymousUsage=true

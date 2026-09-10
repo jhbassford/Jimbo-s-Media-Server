@@ -4,7 +4,7 @@ services:
   # every hardening control below is the real boundary between a
   # prompt-injected agent and the NAS, not defense-in-depth on top of one.
   #
-  # Reachable ONLY as http://hermes:9119 from t3_proxy (Traefik) — no ports:
+  # Reachable ONLY as http://hermes:9119 from hermes_ingress (Traefik) — no ports:
   # published, not even loopback. Its only two other network paths are the
   # RESTRICTED docker-socket proxy (hermes_socket, Task 1: read + restart
   # only) and the domain-allowlisting egress proxy (hermes_net, Task 2:
@@ -176,7 +176,7 @@ services:
     # cpus: 2.0 omitted — see deviation 1 above (no CFS bandwidth control on
     # this kernel at all; docker refuses to create the container with it set).
     pids_limit: 512   # requested; NOT enforced on this kernel — see deviation 2 above; compensated by ulimits.nproc.
-    # NO ports: — reachable only via Traefik on t3_proxy, and Traefik itself
+    # NO ports: — reachable only via Traefik on hermes_ingress, and Traefik itself
     # only proxies to http://hermes:9119 over the docker network.
     volumes:
       - $DOCKERDIR/appdata/hermes:/opt/data
@@ -232,8 +232,9 @@ services:
       NO_PROXY: 192.168.90.0/24,192.168.92.0/24,192.168.93.0/24,localhost,127.0.0.1
       DOCKER_HOST: tcp://192.168.93.2:2375
     networks:
-      t3_proxy:
-        ipv4_address: 192.168.90.10
+      # NOT t3_proxy - see the hermes_ingress comment in docker-compose.yml.
+      hermes_ingress:
+        ipv4_address: 192.168.94.10
       hermes_net:
         ipv4_address: 192.168.92.10
       hermes_socket:
