@@ -1,0 +1,6 @@
+^oauth2\.googleapis\.com$
+^www\.googleapis\.com$
+^gmail\.googleapis\.com$
+^docs\.googleapis\.com$
+^accounts\.google\.com$
+^openidconnect\.googleapis\.com$

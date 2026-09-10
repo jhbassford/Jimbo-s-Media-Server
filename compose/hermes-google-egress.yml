@@ -1,0 +1,49 @@
+services:
+  # Domain-allowlisting forward proxy for the Google MCP container ONLY.
+  # This is the ALLOWLIST; the DOCKER-USER rules in Task 6 are the ENFORCEMENT.
+  #
+  # It is on hermes_google (a TWO-MEMBER network), NOT hermes_net, and that is
+  # load-bearing: tinyproxy's ACL is source-IP based, so a proxy on hermes_net
+  # would accept Hermes at 192.168.92.10 as a client and hand it a route to
+  # Google -- defeating the design's core claim that Hermes' own egress
+  # allowlist is unchanged. See spec section 3.
+  #
+  # Deviations from a naive config, all inherited from hermes-egress-proxy.yml
+  # where they were established the hard way:
+  #   1. entrypoint: invokes /usr/bin/tinyproxy directly. The image's default
+  #      run.sh does `sed -i` on tinyproxy.conf, which fails "Read-only file
+  #      system" against our :ro mount. Invoking the binary directly bypasses
+  #      it and keeps the conf genuinely read-only -- the property that matters,
+  #      since a compromised proxy must not rewrite its own allowlist.
+  #   2. user: "65534:65533" (nobody:nogroup numeric). With cap_drop: ALL there
+  #      is no CAP_SETUID/CAP_SETGID, so tinyproxy's own root->nobody drop fails
+  #      ("Unable to change to group 'nogroup'"). Starting already-unprivileged
+  #      sidesteps the drop with zero capabilities restored.
+  #   3. tmpfs /tmp alongside read_only: true (NOT instead of it). tinyproxy's
+  #      shared-memory allocator open()s a real file under /tmp, unlinks it and
+  #      mmaps it; with no writable /tmp that fails EROFS and surfaces as
+  #      "Could not allocate memory for child counting."
+  hermes-google-egress:
+    # Same pinned digest as hermes-egress-proxy (monokal/tinyproxy). Base is
+    # Alpine 3.10, EOL -- pinning freezes it rather than fixing it. Replacing
+    # both proxies with a maintained/self-built tinyproxy image is a known
+    # follow-up carried over from the parent plan, not new debt from this one.
+    image: monokal/tinyproxy@sha256:2c1b6f187fe18a993ec6e88cdb12c8f1d28d7416bd73492289aa5f74f687c672
+    container_name: hermes-google-egress
+    restart: unless-stopped
+    user: "65534:65533"
+    entrypoint: ["/usr/bin/tinyproxy", "-d", "-c", "/etc/tinyproxy/tinyproxy.conf"]
+    mem_limit: 64M
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - $DOCKERDIR/appdata/hermes-google-egress/tinyproxy.conf:/etc/tinyproxy/tinyproxy.conf:ro
+      - $DOCKERDIR/appdata/hermes-google-egress/filter:/etc/tinyproxy/filter:ro
+    networks:
+      hermes_google:
+        ipv4_address: 192.168.95.2

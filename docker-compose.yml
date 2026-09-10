@@ -38,6 +38,16 @@ networks:
     ipam:
       config:
         - subnet: 192.168.94.0/24
+  # Two-member network: hermes-google-egress + the Google MCP container ONLY
+  # (Task 3). Source-IP-scoped so the proxy's ACL (Allow 192.168.95.0/24)
+  # cannot be reached by Hermes itself on hermes_net. See compose/
+  # hermes-google-egress.yml.
+  hermes_google:
+    name: hermes_google
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.95.0/24
   pihole_network:
     name: pihole_network
     external: true
@@ -90,6 +100,7 @@ include:
  # AGENT
   - compose/hermes-socket-proxy.yml
   - compose/hermes-egress-proxy.yml
+  - compose/hermes-google-egress.yml
   - compose/hermes.yml
 
  # THE REST
