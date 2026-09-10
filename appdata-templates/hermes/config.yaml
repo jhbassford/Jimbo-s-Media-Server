@@ -51,7 +51,7 @@
 
 model:
   # Verified: resolve_provider_client resolves these (see container logs).
-  default: "anthropic/claude-sonnet-5"
+  default: "deepseek/deepseek-v4.1-flash"
   provider: "openrouter"
 
 auxiliary:
@@ -213,7 +213,7 @@ dashboard:
     - "192.168.94.254"
   basic_auth:
     username: "jim"
-    password_hash: "<PLACEHOLDER - generate with the command in the plan>"
+    password_hash: "<PLACEHOLDER - see plan Task 6 Step 3b>"
 
 # Messaging sender allowlists are ENVIRONMENT VARIABLES, not YAML. `hermes config
 # check` lists TELEGRAM_ALLOWED_USERS / GATEWAY_ALLOWED_USERS / *_ALLOW_ALL_USERS.

@@ -42,6 +42,13 @@ Type=oneshot
 # Without it the unit returns to inactive after each run, so every subsequent
 # start genuinely re-executes. Use `systemctl restart` to force a run by hand.
 ExecStart=/volume1/docker/scripts/hermes-firewall.sh
+# Second ExecStart: guardrail drift detection. config.yaml was moved into the
+# agent's writable /opt/data so the dashboard can persist model changes, which
+# reopens the first leg of finding C3. This makes tampering observable rather
+# than silent. Non-blocking (prefixed "-") so a drift ALERT never prevents the
+# firewall rules from being (re)applied -- containment takes priority over
+# reporting, and the alert still lands in the journal.
+ExecStart=-/volume1/docker/scripts/hermes-guardrail-check.sh
 
 # The whole point of this unit is that a failure is LOUD. Do not mask it.
 StandardOutput=journal

@@ -227,7 +227,25 @@ services:
       # `compose up`: Docker silently creates a DIRECTORY at a bind-mount target
       # that does not exist, and a directory at /opt/data/config.yaml breaks the
       # container. Templates: appdata-templates/hermes/{config.yaml,hermes.env}.
-      - $DOCKERDIR/appdata/hermes-etc/config.yaml:/opt/data/config.yaml:ro
+      # config.yaml is deliberately NOT bind-mounted: it is a normal file inside
+      # the writable /opt/data mount, so the dashboard's model picker can
+      # persist. A bind-mounted FILE can never be atomically replaced
+      # (os.replace -> Errno 16), so even mounting it rw would leave Hermes on
+      # its copyfile fallback.
+      #
+      # Operator decision, made knowingly: this reopens the FIRST leg of review
+      # finding C3 -- the agent can rewrite its own guardrails (approvals.*,
+      # security.*, skills.*, tool_loop_guardrails.*). Three things still hold
+      # it down:
+      #  1. The SECOND leg of C3 remains closed independently: `hermes` is not
+      #     in the socket proxy's restart allowlist, so the agent cannot reload
+      #     a config it has rewritten. A tampered value only takes effect at the
+      #     next operator-initiated restart.
+      #  2. hermes.env stays READ-ONLY below, so credentials remain out of reach.
+      #  3. Guardrail drift is detected hourly against a root-owned golden copy
+      #     the agent cannot read or write (hermes-guardrail-check.sh, run by
+      #     hermes-firewall.service). Model changes are ignored; security keys
+      #     are not.
       - $DOCKERDIR/appdata/hermes-etc/hermes.env:/opt/data/.env:ro
     environment:
       PUID: 1000

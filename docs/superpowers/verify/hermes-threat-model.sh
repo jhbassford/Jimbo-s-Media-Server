@@ -81,10 +81,21 @@ echo "== but its own workspace works =="
 callow "code mount"         ls /opt/code
 callow "own data dir"       ls /opt/data
 
-echo "== cannot rewrite its own guardrails (finding C3) =="
-cdeny "append to config.yaml"  sh -c 'echo x >> /opt/data/config.yaml'
-cdeny "replace config.yaml"    sh -c 'rm -f /opt/data/config.yaml'
-cdeny "append to .env"         sh -c 'echo x >> /opt/data/.env'
+echo "== guardrails: config WRITABLE by operator choice, .env still locked =="
+# config.yaml is deliberately writable as of 2026-09-10: the operator wanted the
+# dashboard's model picker to persist, which a read-only bind mount makes
+# impossible. This REOPENS the first leg of finding C3 knowingly. The checks
+# below assert the compensating controls, not the original one.
+callow "config.yaml writable (intended)" sh -c 'touch /opt/data/config.yaml'
+# .env is the line that did NOT move: credentials stay out of reach.
+cdeny  "append to .env"        sh -c 'echo x >> /opt/data/.env'
+cdeny  "replace .env"          sh -c 'rm -f /opt/data/.env'
+# Second leg of C3, still closed: the agent cannot RELOAD a config it rewrote,
+# so tampering lies dormant until an operator-initiated restart.
+denied "restart itself to reload" POST "/containers/hermes/restart"
+# And drift in the security keys is detected hourly against a root-owned golden
+# copy the agent can neither read nor write.
+cdeny  "read the golden copy"  cat /volume1/docker/appdata/hermes-etc/config.yaml.golden
 cdeny "write to rootfs"        touch /usr/local/bin/pwn
 cdeny "write to /opt/hermes"   touch /opt/hermes/pwn
 
