@@ -50,6 +50,16 @@ secrets:
     file: $DOCKERDIR/secrets/cf_dns_api_token
   discord_redbot_token:
     file: $DOCKERDIR/secrets/discord_redbot_token
+  # Moved out of container ENV (review finding C2). The Hermes agent is allowed
+  # GET /containers/<id>/json through its restricted socket proxy, and Docker
+  # returns Config.Env verbatim -- so any secret passed as an environment
+  # variable is readable by a prompt-injected agent. The tunnel token is the
+  # worst case: it is a WRITE credential that can republish tunnel ingress from
+  # anywhere on the internet.
+  cf_tunnel_token:
+    file: $DOCKERDIR/secrets/cf_tunnel_token
+  pihole_webpassword:
+    file: $DOCKERDIR/secrets/pihole_webpassword
 
 include:
   ########################### SERVICES

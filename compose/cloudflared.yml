@@ -6,7 +6,13 @@ services:
     restart: unless-stopped
     network_mode: host
     command: tunnel --no-autoupdate run
+    # Token read from a file instead of the environment (finding C2): env vars
+    # are visible in `docker inspect`, which the agent can call. cloudflared
+    # supports --token-file / TUNNEL_TOKEN_FILE natively. The secret file is
+    # owned 65532:65532 0400 to match this image's non-root runtime user.
     environment:
-      - TUNNEL_TOKEN=$CF_TUNNEL_TOKEN
+      - TUNNEL_TOKEN_FILE=/run/secrets/cf_tunnel_token
+    secrets:
+      - cf_tunnel_token
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
