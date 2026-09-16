@@ -32,6 +32,7 @@ back into an advisory one, with no error anywhere. Copy the file, then run the
 | `hermes-searxng/settings.yml` | `/volume1/docker/appdata/hermes-searxng/settings.yml` | `root:root` | `0644` |
 | `scripts/hermes-firewall.sh` | `/volume1/docker/scripts/hermes-firewall.sh` | `root:root` | `0750` |
 | `scripts/ha-install-midea-ac-lan.sh` | `/volume1/docker/scripts/ha-install-midea-ac-lan.sh` | `root:root` | `0750` |
+| `scripts/ha-install-tuya-local.sh` | `/volume1/docker/scripts/ha-install-tuya-local.sh` | `root:root` | `0750` |
 | `hermes-hindsight/passwd` | `/volume1/docker/appdata/hermes-hindsight-etc/passwd` | `root:root` | `0644` |
 | `hermes-hindsight/group` | `/volume1/docker/appdata/hermes-hindsight-etc/group` | `root:root` | `0644` |
 | `hermes-hindsight/hindsight.env` | `/volume1/docker/appdata/hermes-hindsight/hindsight.env` | `root:root` | `0600` |
@@ -120,6 +121,12 @@ ssh nas 'sudo install -o root -g root -m 0750 /tmp/hermes-firewall.sh /volume1/d
 # component itself is never copied into this directory.
 ssh nas 'cat > /tmp/ha-install-midea-ac-lan.sh' < appdata-templates/scripts/ha-install-midea-ac-lan.sh
 ssh nas 'sudo install -o root -g root -m 0750 /tmp/ha-install-midea-ac-lan.sh /volume1/docker/scripts/ha-install-midea-ac-lan.sh && rm -f /tmp/ha-install-midea-ac-lan.sh'
+
+# the Tuya Local custom-integration installer (the Martec Wi-Fi ceiling fans,
+# which are Tuya under the hood). Same shape: fetches + checksum-verifies its
+# own payload at run time; no component is copied into this directory.
+ssh nas 'cat > /tmp/ha-install-tuya-local.sh' < appdata-templates/scripts/ha-install-tuya-local.sh
+ssh nas 'sudo install -o root -g root -m 0750 /tmp/ha-install-tuya-local.sh /volume1/docker/scripts/ha-install-tuya-local.sh && rm -f /tmp/ha-install-tuya-local.sh'
 
 # Hindsight memory server: passwd/group remap (uid 1200, not the image's 1000),
 # its separate OpenRouter key, and the pg0 data volume.
@@ -552,6 +559,65 @@ established 2026-09-16:
 - Midea is progressively closing the token API. Once added, copy the appliance's
   generated `.json` out of HA: for a v3-protocol device it is the only way to
   re-add the appliance if that service ends.
+
+### `scripts/ha-install-tuya-local.sh`
+
+Reinstalls the "Tuya Local" Home Assistant custom integration into
+`/volume1/docker/appdata/homeassistant/custom_components/tuya_local`. Same
+contract as the Midea installer: needs `root`, is idempotent, and moves an
+existing install aside to `custom_components.bak/tuya_local-<timestamp>` rather
+than a `.bak-` sibling (HA resolves the manifest `domain` of every non-dot entry
+under `custom_components/`, so a sibling backup is a second copy of `tuya_local`
+and wins or loses by `readdir` order).
+
+This is the code path for the two **Martec "Smart Wi-Fi" ceiling fans** — the
+Martec Smart app is a re-badged Tuya app and the fans have Wi-Fi modules, so
+`tuya-local` controls them over the LAN with no cloud in the loop. Installed
+manually because HACS is not on this box and activating it needs an interactive
+GitHub device-code authorisation that cannot be scripted; a manual component
+install needs no auth.
+
+**The pin is different from Midea's and this is deliberate.** `tuya-local`
+publishes **no release assets** — its GitHub releases are tags only and HACS
+fetches the source archive at the tag, so there is no digest GitHub will confirm
+for us. The script pins three things together: the immutable `COMMIT` the tag
+points at, the manifest `VERSION` (checked after extraction), and the `SHA256`
+of codeload's archive for that commit. Bump all three or none; the header shows
+how. The current pin is `2026.9.1`. GitHub can in principle change its
+source-archive format (changing the hash with no code change), which is exactly
+why the manifest version is checked as a second pin.
+
+**It does not pair or configure the fans.** That needs the operator's Tuya cloud
+account, so it stays a UI step — see the gotchas below.
+
+#### Martec fan deployment notes (2026-09-16)
+
+- **Pair the fans into Smart Life / Tuya Smart, not the Martec app.** The
+  cloud-assisted `Tuya Local` config flow logs in against that account to fetch
+  each device's ID, local key and IP. Unpair from the Martec app first. The
+  fan's sticker has the Wi-Fi pairing procedure (power on, then hold the Wi-Fi
+  button until the beep).
+- **The account User Code**, not the password, is what the flow asks for:
+  Smart Life -> Me -> Settings -> Account and Security -> User Code.
+- **Re-pair ordering matters.** Every pairing rotates the device's local key. If
+  a fan is paired (or factory-reset) *after* HA is configured, the stored key is
+  stale and control silently breaks. Pair first, then add to HA.
+- **One local connection at a time.** Many Tuya devices accept a single local
+  connection. Close the Smart Life app (and any other local Tuya integration)
+  while HA is driving the fan, or commands are unreliable.
+- **No Martec profile ships in the integration.** As of the pinned version the
+  bundled `devices/*.yaml` profiles contain no Martec entry. Stage two of the
+  config flow offers approximate matches; if none drives the fan correctly,
+  flatten a YAML device config for the Martec variant, or fall back to
+  `rospogrigio/localtuya` and map data points by hand. The key extractor helper
+  in the brief (a separate container, LAN-only because it stores account tokens
+  and local keys) lists every DP id and code, which is what LocalTuya needs.
+- **The first "Add Integration" needs internet, and startup does not.** HA
+  installs a custom integration's requirements when the *config flow* loads, not
+  when the component is discovered at startup (measured 2026-09-16:
+  `config_entries.py::_load_integration`; `tinytuya` is absent from the image
+  until then). Both requirements resolve on PyPI for the image's Python 3.14:
+  `tinytuya==1.20.0` and `tuya-device-sharing-sdk==0.2.15`.
 
 ## Verifying delivery
 
