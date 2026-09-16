@@ -10,7 +10,7 @@ services:
     networks:
       - t3_proxy
     ports:
-      - "127.0.0.1:8084:8080" # localhost-only; reach via sabnzbd.$DOMAINNAME_1 (Traefik basic auth). No native login.
+      - "8084:8080" # LAN reachable at http://<nas-ip>:8084/; SABnzbd native login is set (see appdata/sabnzbd/sabnzbd.ini). Also reachable via sabnzbd.$DOMAINNAME_1 (Traefik basic auth).
     volumes:
       - $DOCKERDIR/appdata/sabnzbd:/config
       - $DATADIR/library/downloads:/data/downloads

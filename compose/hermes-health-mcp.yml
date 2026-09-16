@@ -1,0 +1,70 @@
+services:
+  # Minimal READ-ONLY Google Health MCP server for Hermes.
+  # Holds the health-only OAuth token (scopes:
+  # googlehealth.nutrition.readonly + googlehealth.activity_and_fitness.readonly)
+  # in its own volume. Never mounted into hermes; that absence is the design.
+  #
+  # WHY A SECOND MCP CONTAINER AND NOT THE EXISTING ONE:
+  #   1. The Health API rejects any token that also carries Gmail/Calendar/Drive
+  #      scopes -- measured 2026-09-10, 403 DISALLOWED_OAUTH_SCOPES -- so the
+  #      health grant cannot share the Workspace token.
+  #   2. taylorwilsdon/google_workspace_mcp has no health tools and no config to
+  #      add them; adding them means forking a pinned upstream image.
+  #   3. The Workspace container holds a send-capable Gmail token; a read-only
+  #      health grant does not belong in that blast radius.
+  # Reused from the Workspace setup: the same GCP project + OAuth client, and
+  # the same googleapis-only egress proxy (whose filter gains
+  # health.googleapis.com). Only the server and its credential are new.
+  #
+  # Dedicated UID 1100 (NOT 1000). RLIMIT_NPROC is per real UID system-wide, so
+  # sharing uid 1000 with hermes + the Workspace MCP would make those two fight
+  # over one ceiling. A fresh UID gives this container its own.
+  #
+  # No published ports. No watchtower label -- bump the pin by hand.
+  hermes-health-mcp:
+    # Locally built from build/hermes-health-mcp/. Rebuilding produces a NEW id;
+    # update this line and re-run the threat-model suite.
+    # Built 2026-09-11 from python:3.11-slim (mcp 1.28.1 / google-auth 2.49.2 /
+    # requests 2.33.1).
+    image: sha256:2566610a4a9761df842ba393f806955f7f5fdccb4c2661cedc9315a6745a8544
+    container_name: hermes-health-mcp
+    restart: unless-stopped
+    user: "1100:1100"
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    memswap_limit: 512m   # without this Docker silently allows memory + 2x swap
+    cpu_shares: 128
+    ulimits:
+      nproc: 256          # its own UID, so no contest with hermes' ceiling
+      nofile: 1024
+    # cpus: and pids_limit deliberately absent -- unavailable on this kernel.
+    environment:
+      TZ: $TZ
+      HEALTH_MCP_PORT: 8000
+      HEALTH_TOKEN_PATH: /credentials/token.json
+      HOME: /tmp          # read_only rootfs; give python a writable HOME
+      # Egress: only the googleapis-only allowlist proxy. The DOCKER-USER rules
+      # keyed to this container's two source IPs are the enforcement; this is
+      # only the instruction.
+      HTTPS_PROXY: http://192.168.95.2:8888
+      HTTP_PROXY: http://192.168.95.2:8888
+      NO_PROXY: 192.168.92.0/24,192.168.95.0/24,localhost,127.0.0.1
+      https_proxy: http://192.168.95.2:8888
+      http_proxy: http://192.168.95.2:8888
+      no_proxy: 192.168.92.0/24,192.168.95.0/24,localhost,127.0.0.1
+    volumes:
+      # Holds the authorized_user token (client id/secret + refresh token).
+      # Writable: the server persists rotated access tokens. NEVER mounted into
+      # hermes. Host owner must be 1100:1100, mode 0700.
+      - $DOCKERDIR/appdata/hermes-health/credentials:/credentials
+    networks:
+      hermes_net:
+        ipv4_address: 192.168.92.4
+      hermes_google:
+        ipv4_address: 192.168.95.11

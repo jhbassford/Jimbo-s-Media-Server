@@ -1,0 +1,27 @@
+# SearXNG settings for the private Hermes search backend.
+#
+# SOURCE OF TRUTH: this file, in git.
+# NAS PATH: /volume1/docker/appdata/hermes-searxng/settings.yml
+# OWNER/MODE: root:root 0644
+#
+# Replace the placeholder secret_key with a random value on the NAS before
+# starting the service. The live secret is deliberately not committed.
+use_default_settings:
+  engines:
+    keep_only:
+      - brave
+      - duckduckgo
+
+server:
+  secret_key: "REPLACE_WITH_A_RANDOM_64_HEX_CHARACTER_SECRET"
+  # The client is a single private Hermes peer and does not send the proxy
+  # headers SearXNG's limiter requires. Hermes already caps searches per turn.
+  limiter: false
+  public_instance: false
+  image_proxy: false
+
+search:
+  # Hermes calls the JSON endpoint only; HTML is not needed on this private
+  # endpoint and would add an unnecessary response surface.
+  formats:
+    - json

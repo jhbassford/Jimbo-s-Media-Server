@@ -1,0 +1,94 @@
+services:
+  # Private readability extractor for Hermes' web_extract. Third member of
+  # hermes_search, alongside the SearXNG search peer and Hermes itself.
+  #
+  # WHY IT EXISTS: web.extract_backend was unset, so web_extract fell through to
+  # the keyless Firecrawl -> Exa ring and every call died 403 Filtered at the
+  # egress allowlist. Hermes could find pages and not read them.
+  #
+  # WHY IT SPEAKS TAVILY'S API: of the five accepted backends (firecrawl,
+  # tavily, keenable, exa, parallel) only two take a self-hosted base URL, and
+  # only one of those works in a read_only Hermes container. The firecrawl
+  # provider lazy-imports firecrawl-py==4.17.0, which is absent from the hermes
+  # image and CANNOT be installed: /opt/hermes/.venv is read-only (touch ->
+  # EROFS, measured) and the only writable import path is /opt/data, the agent's
+  # own mount. The tavily provider honours TAVILY_BASE_URL and uses plain httpx,
+  # which is already installed. See build/hermes-extract/extract_shim.py.
+  #
+  # WHY IT IS NOT THE SEARXNG SHAPE IN THE FIREWALL: SearXNG queries two fixed
+  # engines, so it is allowed unrestricted egress. This service fetches whatever
+  # URL the agent hands it. Unrestricted egress would make it SSRF-as-a-service
+  # for a prompt-injected Hermes, reaching DSM :5000, Home Assistant :8123,
+  # Portainer :9000 and the UniFi gateway on the agent's behalf. The agent-side
+  # gate does not stop that -- tools/url_safety.is_safe_url returns True for any
+  # HOSTNAME in this deployment, because the agent's DNS is blocked and the
+  # function then delegates resolution to the proxy (measured 2026-09-14:
+  # is_safe_url("http://localtest.me/") -> True, and it resolves to 127.0.0.1).
+  # hermes-firewall.sh DROPs this container's IP to all private space; the
+  # shim's own resolve-and-pin check is the policy on top of that enforcement.
+  #
+  # NO published ports. NO watchtower label -- bump the pin by hand.
+  hermes-extract:
+    # Locally built from build/hermes-extract/. Rebuilding produces a NEW id;
+    # update this line and re-run the threat-model suite.
+    # Built 2026-09-14 from python:3.12-slim (trafilatura 2.2.0 / httpx 0.28.1 /
+    # pypdf 6.18.1, resolving lxml 6.1.3). 201MB.
+    image: sha256:b699eabdbdcd304af2039fbd5fd7967be6e7d8a7f094d37382da8345461a7969
+    container_name: hermes-extract
+    restart: unless-stopped
+    # Dedicated UID 1101 (NOT 1000, NOT 1100). RLIMIT_NPROC is per real UID
+    # SYSTEM-WIDE, so sharing a UID with hermes (1000) or hermes-health-mcp
+    # (1100) would make them fight over one process ceiling.
+    user: "1101:1101"
+    read_only: true
+    tmpfs:
+      # Also HOME and TMPDIR (set in the image): the rootfs is read-only and
+      # trafilatura's deps want a writable HOME. noexec, because this container
+      # parses hostile HTML for a living and must not be a write-then-exec path.
+      - /tmp:noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Measured 83.7 MiB RSS after a 23k-char Wikipedia article and an 18k-char
+    # PDF datasheet. 512m is headroom for lxml/pypdf on a pathological document;
+    # the shim caps bodies at 4 MB (HTML) / 12 MB (PDF) so it cannot be fed a
+    # 100 MB file.
+    mem_limit: 512m
+    memswap_limit: 512m   # without this Docker silently allows memory + 2x swap
+    cpu_shares: 128       # below searxng (256) and hermes (512): loses every fight with Plex
+    ulimits:
+      nproc: 256          # its own UID, so no contest with hermes' ceiling
+      nofile: 1024
+    # cpus: and pids_limit deliberately absent -- unavailable on this kernel.
+    environment:
+      TZ: $TZ
+      EXTRACT_PORT: 8080
+      EXTRACT_MAX_URLS: 10
+      EXTRACT_MAX_BYTES: 4194304
+      # PDFs get their own, larger cap: vendor datasheets run 1-3 MB and a
+      # truncated PDF does not parse partially, it fails outright. Separate knob
+      # so raising it does not also hand lxml a 12 MB HTML document.
+      EXTRACT_MAX_PDF_BYTES: 12582912
+      # Text extraction is CPU-bound and this is a 4-core J4125 shared with Plex
+      # transcodes. A 500-page manual is not what web_extract is for.
+      EXTRACT_MAX_PDF_PAGES: 50
+      EXTRACT_TIMEOUT: 20
+      # Hermes' httpx timeout is 60s for the WHOLE batch, not per URL. Finishing
+      # at 45s means the model gets structured failed_results instead of an
+      # opaque ReadTimeout.
+      EXTRACT_BATCH_DEADLINE: 45
+      EXTRACT_MAX_REDIRECTS: 3
+      EXTRACT_CONCURRENCY: 4
+      # DELIBERATELY NO HTTP_PROXY / HTTPS_PROXY. Unlike hermes, the google MCPs
+      # and hindsight, this container is NOT behind a domain allowlist: an
+      # extractor that can only fetch 18 allowlisted domains cannot read the
+      # pages SearXNG finds. It is a separate trust boundary, exactly like
+      # hermes-searxng, and its containment is the private-space DROP in
+      # hermes-firewall.sh rather than an allowlist. The shim also passes
+      # trust_env=False to httpx so a stray inherited *_proxy cannot reroute it.
+    networks:
+      # ONLY hermes_search. Not t3_proxy, not hermes_net, not hermes_ingress,
+      # not hermes_socket. It holds no credentials and needs no peer but Hermes.
+      hermes_search:
+        ipv4_address: 192.168.96.3

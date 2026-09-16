@@ -1,0 +1,36 @@
+services:
+  # Private, search-only web backend for Hermes. This service is deliberately
+  # not on t3_proxy, hermes_net, hermes_ingress, or any socket-proxy network.
+  # Its own upstream engine traffic is a separate trust boundary from Hermes'
+  # default-deny internet egress.
+  hermes-searxng:
+    # Resolved 2026-09-14 from docker.io/searxng/searxng:2026.9.13-d4ce87c23.
+    # Never substitute a mutable tag here.
+    image: docker.io/searxng/searxng@sha256:e0e0557627cc3e46cc82d8c23bb3a3a74eb203ae42f73142db555551af336096
+    container_name: hermes-searxng
+    restart: unless-stopped
+    user: "977:977"
+    read_only: true
+    mem_limit: 768M
+    memswap_limit: 768M
+    cpu_shares: 256
+    ulimits:
+      nproc: 512
+      nofile: 4096
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      # The config and cache directories are pre-created and owned by UID 977;
+      # no entrypoint chown is needed or permitted.
+      FORCE_OWNERSHIP: "false"
+      SEARXNG_SETTINGS_PATH: /etc/searxng/settings.yml
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev,size=32m
+      - /var/cache/searxng:noexec,nosuid,nodev,size=64m,uid=977,gid=977,mode=0755
+    volumes:
+      - $DOCKERDIR/appdata/hermes-searxng:/etc/searxng:ro
+    networks:
+      hermes_search:
+        ipv4_address: 192.168.96.2

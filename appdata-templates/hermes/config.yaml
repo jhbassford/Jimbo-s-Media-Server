@@ -195,14 +195,23 @@ skills:
   # only auto_install keys in the schema belong to secrets.bitwarden and proxy.
   # It was silently ignored. These are the real controls:
   #
+  # NOTE (2026-09-14): the live config normalises some disabled ids to
+  # namespaced forms on every rewrite (`google-workspace` -> `google.google-workspace`,
+  # `arxiv` -> `gdrive.arxivhunter`); the image resolves the short ids at load,
+  # so the seed keeps the short operator-disabled ids.
+  #
   # inline_shell false = SKILL.md !`cmd` snippets are NOT pre-executed on the
   # host at load time. This is the nastiest thing in the section; it is the
   # default, pinned here.
   inline_shell: false
-  # Agent-written skills are staged for /skills approve rather than taking
-  # effect immediately. This is the real version of what auto_install: false
-  # was meant to do.
-  write_approval: true
+  # OPERATOR DECISION, 2026-09-14: agent-written skills are AUTO-APPROVED
+  # (write_approval false, was true). They were staged for /skills approve;
+  # that made skill authoring unusable in unattended/gateway sessions. This is
+  # a deliberate relaxation of the "real version of auto_install: false"
+  # control, accepted knowingly: an agent that can write a skill can persist
+  # instructions that load in future sessions. guard_agent_created stays true
+  # (below) -- the security scan is what keeps this from being unbounded.
+  write_approval: false
   # Security-scan skills the agent writes. The schema is candid that this is
   # weak - "the agent can run the same code via terminal() ungated, so it mostly
   # blocks prose with risky keywords" - but it costs nothing.
@@ -220,13 +229,41 @@ skills:
   # skills.* is one of the sections hermes-guardrail-check.sh diffs.
   disabled:
     - airtable
+    - architecture-diagram
+    - arxiv
+    - ascii-video
+    - baoyu-infographic
     - box
+    - claude-code
+    - codebase-inspection
     - codex
+    - computer-use
     - notion
     - obsidian
     - opencode
+    - songsee
+    - songwriting-and-ai-music
     - teams-meeting-pipeline
     - google-workspace
+
+memory:
+  # Hindsight is the native, bundled long-term memory provider. THIS BLOCK ONLY
+  # SELECTS IT AND TURNS OFF THE BUILT-IN FLAT-FILE STORES (vendor-recommended,
+  # so the model does not prefer MEMORY.md over Hindsight). The provider's own
+  # connection settings -- mode local_external, api_url, bank_id -- do NOT live
+  # here: they are in $HERMES_HOME/hindsight/config.json, which is INSIDE the
+  # agent-writable /opt/data mount. Confirmed from source
+  # (plugins/memory/hindsight/__init__.py::_load_config): if that file exists it
+  # is returned WHOLESALE and the HINDSIGHT_* env vars are never read, so an env
+  # var there is silently inert. The server itself is the separate
+  # hermes-hindsight container; see appdata-templates/hermes-hindsight/README.
+  #
+  # memory.* is deliberately NOT in hermes-guardrail-check.sh's diffed section
+  # list, so changing it does not alarm. That is acceptable: it is a recall
+  # setting, not a containment control.
+  provider: hindsight
+  memory_enabled: false        # disable the built-in MEMORY.md store
+  user_profile_enabled: false  # disable the built-in USER.md store
 
 browser:
   # `browser.enabled` DOES NOT EXIST and was removed - the schema has `backend`,
@@ -238,6 +275,35 @@ browser:
   auto_local_for_private_urls: false
   extension_control:
     enabled: false
+
+web:
+  # Search is provided by a private SearXNG peer. It is search-only: do not
+  # set the shared web.backend value, because SearXNG does not extract pages.
+  search_backend: "searxng"
+  # Extraction is the private trafilatura shim at 192.168.96.3 (see
+  # compose/hermes-extract.yml), reached through the `tavily` provider because
+  # that provider is pure-httpx and honours TAVILY_BASE_URL. The name is a
+  # transport detail: nothing is sent to api.tavily.com, and TAVILY_API_KEY is
+  # a dummy string the shim ignores.
+  #
+  # `firecrawl` would also accept a self-hosted URL (FIRECRAWL_API_URL) and is
+  # UNUSABLE here: it lazy-imports firecrawl-py==4.17.0, which is absent from
+  # this image and cannot be installed -- /opt/hermes/.venv is read-only
+  # (measured EROFS) and the only writable import path is the agent's own
+  # /opt/data. Do not "fix" this by switching to firecrawl.
+  #
+  # VERIFIED before relying on it, the same way `browser.enabled` was verified
+  # NOT to exist: `hermes config get web.extract_backend` exits 0 with an empty
+  # value (a real schema key, unset), whereas a bogus key exits 1 with
+  # "Config key not set". browser.enabled exits 1 -- it is a bogus key.
+  extract_backend: "tavily"
+  # NO CLOUD FALLBACK. Tavily is not in the keyless ring (exa / parallel /
+  # firecrawl / keenable), so tools/web_tools_rescue.py::_rescue_eligible
+  # returns True for it: a shim failure would otherwise trigger a one-shot
+  # "rescue" that walks the ring against the public internet -- precisely the
+  # 403 Filtered cloud calls this whole change exists to eliminate. Turning it
+  # off means a shim failure reads as a shim failure.
+  keyless_rescue: false
 
 tool_loop_guardrails:
   # Unattended gateways hard-stop by default; pinned.
@@ -316,5 +382,68 @@ mcp_servers:
         - inspect_doc_structure
       # Drop third-party utility wrappers we do not need. Their descriptions are
       # model-facing text from an upstream project (spec section 7.4).
+      resources: false
+      prompts: false
+
+  # Google Health via a second, READ-ONLY MCP container. The health OAuth token
+  # lives in hermes-health-mcp's own volume and is NOT reachable from this
+  # container -- same credential-absence property as the google block above.
+  #
+  # WHY A SEPARATE GRANT: the Health API rejects any OAuth token that also
+  # carries Gmail/Calendar/Drive scopes (measured 2026-09-10: 403
+  # DISALLOWED_OAUTH_SCOPES), so it could not share the Workspace token.
+  #
+  # Read-only by construction: the token carries only
+  # googlehealth.nutrition.readonly and googlehealth.activity_and_fitness.readonly
+  # -- no write scope exists and no write tool is exposed. This include list is
+  # the agent-writable Layer 2; the token scopes are the enforcing Layer 0.
+  health:
+    url: "http://192.168.92.4:8000/mcp"
+    enabled: true
+    timeout: 120
+    tools:
+      include:
+        - whoami
+        - list_nutrition_entries
+        - nutrition_daily_totals
+        - list_workouts
+      resources: false
+      prompts: false
+
+  # PocketSmith via the VENDOR-HOSTED remote MCP (spec 2026-09-11).
+  #
+  # This is the one integration that does NOT follow the isolated-credential-
+  # container pattern used for google/health above. PocketSmith hosts the server;
+  # there is no self-hosted equivalent, so the alternative was to reimplement 66
+  # tools behind a local proxy -- more code, same token exposure. Recorded and
+  # accepted in the spec.
+  #
+  # DELTA THE OPERATOR ACCEPTED (spec section 5.2): Hermes caches OAuth tokens
+  # under $HERMES_HOME = /opt/data, the agent's own read-write mount. So the
+  # PocketSmith refresh token -- unlike the Google one -- IS inside the blast
+  # radius. Bound by: default-deny egress (no generic paste/transfer destination
+  # is allowlisted) and independent revocation at
+  # https://my.pocketsmith.com/security/manage_apps
+  #
+  # FULL ACCESS, by explicit operator choice (spec section 1): all 66 tools,
+  # including create/update/delete_transaction and create/update/delete_event.
+  # Full access is expressed by NOT writing a tools.include list. The Google
+  # block above is allowlisted because its server needed withholding writes; the
+  # capability ceiling here is PocketSmith's own account scope, not this file.
+  #
+  # OAuth is Dynamic Client Registration + PKCE, no pre-registered client. The
+  # server advertises no device-code grant, so consent is a one-time operator
+  # browser paste-back via `hermes mcp login pocketsmith`; the token then lives
+  # at /opt/data/mcp-tokens/pocketsmith.json and refreshes silently.
+  #
+  # Only mcp.pocketsmith.com is allowlisted in hermes-egress/filter (one host
+  # covers /mcp, /oauth/register, /oauth/authorize and /oauth/token). No firewall
+  # change: Hermes already reaches its egress proxy, which does the filtering.
+  pocketsmith:
+    url: "https://mcp.pocketsmith.com/mcp"
+    auth: oauth
+    enabled: true
+    timeout: 120
+    tools:
       resources: false
       prompts: false

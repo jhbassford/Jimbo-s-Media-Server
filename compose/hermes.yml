@@ -296,6 +296,27 @@ services:
       HERMES_DASHBOARD: 1
       HERMES_DASHBOARD_HOST: 0.0.0.0        # container-internal only; no host port is published
       HERMES_DASHBOARD_PORT: 9119
+      # Search-only peer. SearXNG is not an extraction backend and is not part
+      # of Hermes' internet egress path.
+      SEARXNG_URL: http://192.168.96.2:8080
+      # Extraction peer, the OTHER half of "find a page, then read it". Routed
+      # through the `tavily` provider because that provider is pure-httpx and
+      # honours TAVILY_BASE_URL (plugins/web/tavily/provider.py:44). The
+      # firecrawl provider also takes a self-hosted URL via FIRECRAWL_API_URL,
+      # and is UNUSABLE here: it lazy-imports firecrawl-py==4.17.0, which is
+      # absent from this image and cannot be installed, because /opt/hermes/.venv
+      # is read-only (touch -> EROFS, measured 2026-09-14) and the only writable
+      # import path would be /opt/data -- the agent's own mount, i.e. an
+      # agent-writable directory on the agent's import path. See
+      # compose/hermes-extract.yml and build/hermes-extract/extract_shim.py.
+      TAVILY_BASE_URL: http://192.168.96.3:8080
+      # NOT a credential, and deliberately not in hermes.env. The shim ignores
+      # it. It exists because the tavily provider refuses to run unkeyed unless
+      # keyless mode is selected -- and keyless mode posts to api.tavily.com,
+      # which is exactly the cloud call this whole change removes. Being visible
+      # in `docker inspect` (which the agent can read through the socket proxy)
+      # costs nothing here, unlike the real secrets moved out in finding C2.
+      TAVILY_API_KEY: local-extractor
       HTTP_PROXY: http://192.168.92.2:8888
       HTTPS_PROXY: http://192.168.92.2:8888
       # NO_PROXY holds CIDRs for the internal docker subnets, but NOT every HTTP
@@ -307,7 +328,16 @@ services:
       # internal peer the agent initiates to, because "on the same subnet" is
       # only a bypass if the client parses the subnet. The Google MCP endpoint
       # is the one that bites today; add the exact IP here for any future one.
-      NO_PROXY: 192.168.90.0/24,192.168.92.0/24,192.168.93.0/24,192.168.92.3,localhost,127.0.0.1
+      # 192.168.92.11: the self-hosted Hindsight memory server. The hindsight
+      # client is httpx-based, which does honour NO_PROXY, but the exact IP is
+      # listed for the same reason as the MCP IPs -- a CIDR-only entry is only a
+      # bypass if the client parses CIDRs.
+      # 192.168.96.3: the private extractor. Its client is the tavily provider's
+      # plain httpx, which DOES honour the CIDR -- measured 2026-09-14, an
+      # httpx.post to 192.168.96.x returned the peer's own 404 rather than the
+      # Tinyproxy's 403 Filtered. The exact IP is listed anyway, per the rule
+      # above: a CIDR-only entry is only a bypass if the client parses CIDRs.
+      NO_PROXY: 192.168.90.0/24,192.168.92.0/24,192.168.93.0/24,192.168.96.0/24,192.168.92.3,192.168.92.4,192.168.92.11,192.168.96.2,192.168.96.3,localhost,127.0.0.1
       DOCKER_HOST: tcp://192.168.93.2:2375
       # Write sandbox: confines write_file/patch to these prefixes at the TOOL
       # layer, so a denied write gives a clear error rather than an opaque EROFS.
@@ -374,3 +404,5 @@ services:
         ipv4_address: 192.168.92.10
       hermes_socket:
         ipv4_address: 192.168.93.10
+      hermes_search:
+        ipv4_address: 192.168.96.10

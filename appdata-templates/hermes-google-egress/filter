@@ -4,3 +4,4 @@
 ^docs\.googleapis\.com$
 ^accounts\.google\.com$
 ^openidconnect\.googleapis\.com$
+^health\.googleapis\.com$

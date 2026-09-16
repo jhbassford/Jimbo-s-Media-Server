@@ -8,5 +8,11 @@
 ^files\.pythonhosted\.org$
 ^api\.telegram\.org$
 ^setup\.hermes-agent\.nousresearch\.com$
+^hermes-agent\.nousresearch\.com$
 ^discord\.com$
 ^gateway\.discord\.gg$
+^mcp\.pocketsmith\.com$
+^huggingface\.co$
+^cdn-lfs\.huggingface\.co$
+^cdn-lfs-us-1\.huggingface\.co$
+^cas-bridge\.xethub\.hf\.co$

@@ -160,13 +160,19 @@ TAG=hermes-firewall
 #                  It is off that network entirely now.)
 #   192.168.92.10  hermes_net    (egress via the Tinyproxy allowlist)
 #   192.168.93.10  hermes_socket (restricted docker socket proxy)
-HERMES_IPS="192.168.94.10 192.168.92.10 192.168.93.10"
+#   192.168.96.10  hermes_search (private SearXNG search peer)
+HERMES_IPS="192.168.94.10 192.168.92.10 192.168.93.10 192.168.96.10"
 
 # The only destinations the agent may initiate to.
 EGRESS_PROXY=192.168.92.2      # Tinyproxy - its one way out
 SOCKET_PROXY=192.168.93.2      # restricted docker socket proxy (read + scoped restart)
 TRAEFIK=192.168.94.254         # Traefik on hermes_ingress (its only peer there)
 GOOGLE_MCP=192.168.92.3        # Google Workspace MCP server (spec 2026-09-10)
+HEALTH_MCP=192.168.92.4        # Google Health MCP server (read-only, 2026-09-10)
+HINDSIGHT=192.168.92.11       # self-hosted Hindsight memory server (local_external, 2026-09-14)
+SEARXNG=192.168.96.2          # private, search-only SearXNG peer
+EXTRACTOR=192.168.96.3        # private readability extractor (arbitrary-URL fetcher)
+HERMES_SEARCH=192.168.96.10   # Hermes' address on hermes_search
 # NOTE: this list is PER-HOST, not per-subnet. The Signal handoff brief and the
 # 2026-09-10 Google spec both claimed "the firewall allows hermes ->
 # 192.168.92.0/24", and that is FALSE - being on the same bridge is not
@@ -187,6 +193,18 @@ GOOGLE_MCP=192.168.92.3        # Google Workspace MCP server (spec 2026-09-10)
 # makes the policy read as if that surface still exists.
 GOOGLE_MCP_IPS="192.168.92.3 192.168.95.10"
 GOOGLE_EGRESS_PROXY=192.168.95.2
+
+# The Google HEALTH MCP container: same one-way-out treatment. It holds a
+# read-only health token, so it too gets only the googleapis proxy. Both source
+# addresses, for the same multi-homing reason as HERMES_IPS.
+HEALTH_MCP_IPS="192.168.92.4 192.168.95.11"
+
+# The self-hosted Hindsight memory server (local_external mode). Same one-way-out
+# treatment as the MCP containers: it holds all of Hermes' long-term memory and
+# reaches its extraction LLM (OpenRouter) only through the egress allowlist
+# proxy. Single-homed on hermes_net, so unlike the MCPs there is no second
+# hermes_google address to list.
+HINDSIGHT_IPS="192.168.92.11"
 
 log() {
 	echo "$(date '+%Y-%m-%d %H:%M:%S') [$TAG] $*"
@@ -227,7 +245,7 @@ for ip in $HERMES_IPS; do
 	# when hermes still sat on the shared t3_proxy. That is now fixed properly
 	# at the topology level: the agent is not on t3_proxy at all, so Portainer,
 	# Dozzle and the *arr APIs are unreachable by construction, not by rule.
-	for dst in "$EGRESS_PROXY" "$SOCKET_PROXY" "$TRAEFIK" "$GOOGLE_MCP"; do
+	for dst in "$EGRESS_PROXY" "$SOCKET_PROXY" "$TRAEFIK" "$GOOGLE_MCP" "$HEALTH_MCP" "$HINDSIGHT" "$SEARXNG" "$EXTRACTOR"; do
 		$IPT -A "$CHAIN" -s "$ip" -d "$dst" -j RETURN \
 			|| die "cannot add RETURN $ip -> $dst"
 	done
@@ -256,6 +274,86 @@ for ip in $GOOGLE_MCP_IPS; do
 		|| log "note: LOG target unavailable, dropping without logging"
 	$IPT -A "$CHAIN" -s "$ip" -j DROP || die "cannot add DROP for $ip"
 done
+
+# --- The Google Health MCP container: same one-way-out treatment -------------
+for ip in $HEALTH_MCP_IPS; do
+	$IPT -A "$CHAIN" -s "$ip" -d "$GOOGLE_EGRESS_PROXY" -j RETURN \
+		|| die "cannot add RETURN $ip -> $GOOGLE_EGRESS_PROXY"
+	$IPT -A "$CHAIN" -s "$ip" -m limit --limit 6/min --limit-burst 10 \
+		-j LOG --log-prefix "hmcp-drop: " --log-level 4 2>/dev/null \
+		|| log "note: LOG target unavailable, dropping without logging"
+	$IPT -A "$CHAIN" -s "$ip" -j DROP || die "cannot add DROP for $ip"
+done
+
+# --- The Hindsight memory server: same one-way-out treatment -----------------
+# Its allowlist (the OpenRouter + HuggingFace filter on the shared egress proxy)
+# is the POLICY; these rules are the ENFORCEMENT. A client that ignores
+# HTTPS_PROXY fails rather than escaping. Replies to connections it did not
+# initiate (Hermes -> Hindsight recall/retain) survive on the unconditional
+# ESTABLISHED,RELATED RETURN added above.
+for ip in $HINDSIGHT_IPS; do
+	$IPT -A "$CHAIN" -s "$ip" -d "$EGRESS_PROXY" -j RETURN \
+		|| die "cannot add RETURN $ip -> $EGRESS_PROXY"
+	$IPT -A "$CHAIN" -s "$ip" -m limit --limit 6/min --limit-burst 10 \
+		-j LOG --log-prefix "hindsight-drop: " --log-level 4 2>/dev/null \
+		|| log "note: LOG target unavailable, dropping without logging"
+	$IPT -A "$CHAIN" -s "$ip" -j DROP || die "cannot add DROP for $ip"
+done
+
+# SearXNG is intentionally a separate trust boundary. It needs direct
+# internet access to query its configured search engines, but it must not use
+# the shared bridge to initiate a request into Hermes.
+$IPT -A "$CHAIN" -s "$SEARXNG" -d "$HERMES_SEARCH" -j DROP \
+	|| die "cannot block SearXNG -> Hermes"
+
+# --- The extractor: the public internet YES, private space NO ----------------
+# DELIBERATELY NOT THE SEARXNG SHAPE, and this is the one place in this script
+# where copying the pattern above would be a hole. SearXNG gets unrestricted
+# egress because it only ever queries two fixed upstream engines. The extractor
+# fetches whatever URL the agent hands it, so unrestricted egress would make it
+# SSRF-as-a-service for a prompt-injected Hermes: DSM :5000, Home Assistant
+# :8123 (network_mode: host), Portainer :9000 (permissive socket proxy ==
+# container create == root here), the *arr APIs, the UniFi gateway -- all of it
+# fetched on the agent's behalf by a container the agent is allowed to talk to.
+#
+# THE AGENT-SIDE GATE DOES NOT COVER THIS. tools/url_safety.py:283 returns True
+# when DNS resolution fails AND a proxy is configured, delegating resolution to
+# the proxy. Hermes' DNS is deliberately blocked (see above), so that branch is
+# ALWAYS taken and every HOSTNAME is waved through; only literal private IPs are
+# stopped. Measured 2026-09-14 inside the container:
+#     is_safe_url("http://192.168.1.104:5000/") -> False
+#     is_safe_url("http://localtest.me/")       -> True   (resolves to 127.0.0.1)
+# The shim does its own resolve-and-pin check, but that is POLICY. These rules
+# are the ENFORCEMENT, exactly as the Tinyproxy allowlist is to the DROPs above.
+#
+# DNS SURVIVES THIS, and that is not luck: the host's /etc/resolv.conf is
+# 8.8.8.8 / 8.8.4.4 (checked 2026-09-14), so dockerd's embedded resolver
+# forwards the container's queries OUT of private space and they never match a
+# rule below. If that ever becomes a LAN resolver (e.g. pointed at Pi-hole), add
+# an explicit RETURN to it ABOVE these DROPs or the extractor goes deaf with no
+# error anywhere -- the same silent-timeout failure the Google MCP hit.
+#
+# Replies to Hermes are safe: rule 1 of this chain is an unconditional
+# ESTABLISHED,RELATED RETURN, so these DROPs only ever see NEW connections the
+# extractor itself initiates.
+for net in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 127.0.0.0/8 \
+           169.254.0.0/16 100.64.0.0/10 0.0.0.0/8 192.0.0.0/24 \
+           198.18.0.0/15 224.0.0.0/4 240.0.0.0/4; do
+	# 169.254.0.0/16 covers cloud metadata; 100.64.0.0/10 matters here because
+	# this house is behind CGNAT, so a neighbour is not "the internet".
+	$IPT -A "$CHAIN" -s "$EXTRACTOR" -d "$net" -m limit --limit 6/min --limit-burst 10 \
+		-j LOG --log-prefix "extract-drop: " --log-level 4 2>/dev/null \
+		|| log "note: LOG target unavailable, dropping without logging"
+	$IPT -A "$CHAIN" -s "$EXTRACTOR" -d "$net" -j DROP \
+		|| die "cannot add DROP $EXTRACTOR -> $net"
+done
+
+# Symmetric with the SearXNG -> Hermes rule above: neither search-network peer
+# may initiate into the other or into the agent. Already covered by the
+# 192.168.0.0/16 DROP, kept explicit so trimming a CIDR cannot silently reopen
+# it.
+$IPT -A "$CHAIN" -s "$SEARXNG" -d "$EXTRACTOR" -j DROP \
+	|| die "cannot block SearXNG -> extractor"
 
 # --- Hook 1: container -> anywhere-but-the-host (FORWARD path) ---------------
 # DOCKER-USER is a CUSTOM chain, so -C and -D are trustworthy here. The loop is

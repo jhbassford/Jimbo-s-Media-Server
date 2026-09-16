@@ -9,6 +9,7 @@ chk() { # name expected_result url
 }
 chk "openrouter allowed"  allow https://openrouter.ai/api/v1/models
 chk "github allowed"      allow https://api.github.com/
+chk "pocketsmith allowed" allow https://mcp.pocketsmith.com/.well-known/oauth-protected-resource
 chk "evil.com denied"     deny  https://example.com/
 chk "pastebin denied"     deny  https://pastebin.com/
 

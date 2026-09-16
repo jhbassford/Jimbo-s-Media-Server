@@ -48,6 +48,13 @@ networks:
     ipam:
       config:
         - subnet: 192.168.95.0/24
+  # Two-member network: Hermes + the private SearXNG search endpoint only.
+  hermes_search:
+    name: hermes_search
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.96.0/24
   pihole_network:
     name: pihole_network
     external: true
@@ -102,6 +109,10 @@ include:
   - compose/hermes-egress-proxy.yml
   - compose/hermes-google-egress.yml
   - compose/hermes-google-mcp.yml
+  - compose/hermes-health-mcp.yml
+  - compose/hermes-hindsight.yml
+  - compose/hermes-searxng.yml
+  - compose/hermes-extract.yml
   - compose/hermes.yml
 
  # THE REST

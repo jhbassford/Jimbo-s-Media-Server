@@ -1,0 +1,158 @@
+services:
+  # Self-hosted Hindsight memory server — the "existing instance I'm already
+  # running" that Hermes' native Hindsight plugin reaches in local_external mode.
+  # Spec/plan: none yet; this file is the record. Feature request 2026-09-14.
+  #
+  # BOOT HISTORY (first-start failure and fix, 2026-09-14 — read before changing
+  # anything below):
+  #   1. `user: 1200:1200` + the passwd/group remap (DEDICATED UID below) boots
+  #      and the loader still reaches the network: the bundled weights are VISIBLE
+  #      but arrive NON-uid-owned, and the loader wants to write
+  #      lock/refs/revision files next to them. The failure surfaced as a
+  #      huggingface_hub ProxyError (metadata fetch for
+  #      `BAAI/bge-small-en-v1.5`), NOT a permission error — misread twice.
+  #   2. A `tmpfs:` at /home/hindsight/.cache would MASK the bundled weights and
+  #      force a full network re-download on every boot. Rejected after the
+  #      mounts were read live (`docker inspect --format Mounts`).
+  #   3. The fix: a host directory SEEDED ONCE from the pinned image's own
+  #      layers (`docker cp` of /home/hindsight/.cache/huggingface, command in
+  #      appdata-templates/README.md), chowned 1200:1200, mounted at the same
+  #      path. Weights stay the image's own; the runtime gains a uid-owned
+  #      writable cache. HF_* tunables stay OFF — the seeded set is the deployed
+  #      set.
+  #
+  # WHAT IT IS: the backing store for Hermes' long-term memory (retain / recall /
+  # reflect). Hermes holds NO memory data itself; it talks to this container at
+  # http://192.168.92.11:8888 and Hindsight keeps everything in an embedded
+  # PostgreSQL (pg0) in its own volume. That volume is NEVER mounted into
+  # hermes, so a fully hijacked agent still cannot read the raw memory store.
+  #
+  # WHY THE VENDOR'S PROPOSED `hermes:` SERVICE BLOCK WAS NOT APPLIED: it
+  # REPLACES the hardened hermes service (static IPs on three networks, egress
+  # proxy, restricted socket proxy, read_only rootfs). This file adds a SEPARATE
+  # service; compose/hermes.yml is untouched except for one NO_PROXY entry.
+  #
+  # DEDICATED UID 1200, DELIBERATELY NOT 1000. On this DSM kernel RLIMIT_NPROC
+  # is enforced per REAL UID, SYSTEM-WIDE, across containers (see the long note
+  # in compose/hermes-google-mcp.yml deviation 4). Hermes and the Google MCP
+  # already share UID 1000 and their ceilings are 1024 / 512. Hindsight is
+  # Python + embedded PostgreSQL + workers and would add a large task count to
+  # that same UID, risking fork failures in the OTHER containers. A dedicated
+  # UID gives it its own ceiling and removes the contest.
+  #
+  # The upstream image only defines the `hindsight` account at UID 1000 and
+  # CRASHES at startup under any other UID (`KeyError: getpwuid(): uid not
+  # found`), so the same passwd/group remap trick Hermes uses is applied here:
+  # /etc/passwd and /etc/group are read-only bind mounts of edited copies of the
+  # image's own files, with the `hindsight` line remapped 1000 -> 1200. The
+  # container then starts already at 1200:1200 with no privilege transition.
+  #
+  # NO watchtower label. A self-updating container that holds all of the agent's
+  # memory is a supply-chain hole and a silent memory-store migration risk. Bump
+  # the digest by hand.
+  hermes-hindsight:
+    # Pinned by digest, resolved 2026-09-14 from ghcr.io/vectorize-io/hindsight:latest
+    # (image id 3592fc9e8732, ~4.57 GB). Never substitute :latest here.
+    image: ghcr.io/vectorize-io/hindsight@sha256:84ab276b8f501546deb6ea9c64a57291718b4e16a59dd9e02a02fdd5adfe9028
+    container_name: hermes-hindsight
+    restart: unless-stopped
+    # Numeric: the bind-mounted passwd makes getpwuid(1200) resolve; Docker
+    # itself resolves the string "hindsight" against the IMAGE's passwd (1000),
+    # not the mount, so a name here would silently stay 1000.
+    user: "1200:1200"
+    # start-all.sh traps SIGTERM so pg0 gets a clean PostgreSQL shutdown; its own
+    # comment says Docker's 10s default SIGKILLs before that finishes.
+    stop_grace_period: 30s
+    # Required by the image (PostgreSQL shared memory). Without it pg0 can fail
+    # to start with the default 64 MB /dev/shm.
+    shm_size: 1g
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # read_only is deliberately NOT set, unlike the MCP containers. PostgreSQL
+    # needs to write inside its data dir and the AI runtime writes caches/logs
+    # outside /home/hindsight/.pg0; read_only would break both. The boundary
+    # that matters here is the egress firewall and the empty-of-secrets mount,
+    # not an immutable rootfs.
+    mem_limit: 3g
+    memswap_limit: 3g   # without this Docker silently allows memory + 2x swap
+    cpu_shares: 512
+    ulimits:
+      nproc: 1024       # its own UID, so no contest with hermes' / google-mcp's
+      nofile: 4096
+    # cpus: and pids_limit deliberately absent -- unavailable on this kernel
+    # (see compose/hermes.yml deviations 1 and 2).
+    #
+    # NO ports: — reachable only as http://192.168.92.11:8888 from Hermes over
+    # hermes_net. The Control Plane UI (port 9999) is NOT published and is
+    # disabled below: the agent needs only the API, and an unauthenticated UI
+    # over the agent's own network would be a new lateral surface for nothing.
+    env_file:
+      # NAS-side, root:root 0600, holds the SEPARATE OpenRouter key. push.sh
+      # does not sync appdata-templates/, so this is delivered by hand (see
+      # appdata-templates/README.md).
+      - $DOCKERDIR/appdata/hermes-hindsight/hindsight.env
+    environment:
+      TZ: $TZ
+      # Docker sets HOME from the IMAGE passwd for the default user; under a
+      # numeric --user it does not. start-all.sh keys the pg0 path off $HOME, so
+      # without this the data dir would be /.pg0.
+      HOME: /home/hindsight
+      # Extraction / observation consolidation / reflect LLM. Separate OpenRouter
+      # key from the agent's (see env_file). OpenRouter is a first-class Hindsight
+      # provider; the model must support >=65k output tokens, which the free SKUs
+      # do not — do not "save money" here or retain will silently fail.
+      HINDSIGHT_API_LLM_PROVIDER: openrouter
+      HINDSIGHT_API_LLM_MODEL: deepseek/deepseek-v4.1-flash
+      # Stable worker identity so a task in flight when the container restarts is
+      # not orphaned under a random container-id hostname.
+      HINDSIGHT_API_WORKER_ID: hermes-hindsight
+      # API only. The Control Plane is not exposed; disabling it saves ~256 MB
+      # and removes the extra Node process.
+      HINDSIGHT_ENABLE_CP: "false"
+      # Model bootstrap safety: the seeded cache IS the deployed weights (see
+      # the volumes block). HF_HUB_OFFLINE stays OFF: 2026-09-14 measured that
+      # the loader otherwise hits the network on missing refs, and an explicit
+      # offline flag would turn a cache miss into a silent boot failure on a
+      # future digest bump instead of the loud network 403 the proxy produces.
+      # HF_HUB_OFFLINE: "1"
+      # Egress: everything out goes through the shared Tinyproxy allowlist. The
+      # DOCKER-USER rules keyed to 192.168.92.11 are the ENFORCEMENT; this is only
+      # the instruction. The proxy filter allows openrouter.ai (inherited) and
+      # the HuggingFace hosts (added for this container's HF fallback).
+      HTTPS_PROXY: http://192.168.92.2:8888
+      HTTP_PROXY: http://192.168.92.2:8888
+      NO_PROXY: localhost,127.0.0.1,192.168.92.2
+      https_proxy: http://192.168.92.2:8888
+      http_proxy: http://192.168.92.2:8888
+      no_proxy: localhost,127.0.0.1,192.168.92.2
+    volumes:
+      # Embedded PostgreSQL data + pg0 instances. Must be owned 1200:1200 (the
+      # container cannot chown it — it is rootless) or startup fails closed with
+      # an actionable "not writable by this container" message.
+      - $DOCKERDIR/appdata/hermes-hindsight/.pg0:/home/hindsight/.pg0
+      # Writable HuggingFace model cache, SEEDED ONCE from the pinned image's
+      # own layers (command in appdata-templates/README.md). WHY A COPY: the
+      # bundled sentence-transformer weights live at
+      # /home/hindsight/.cache/huggingface (read live 2026-09-14), but that
+      # directory tree ships NON-root-owned inside the image. Under the
+      # DEDICATED UID (below) the loader cannot write its lock/refs/Xet-log
+      # files there and dies with a huggingface_hub ProxyError rather than a
+      # permission error. A tmpfs CANNOT fix this — it would MASK the bundled
+      # weights and force a full network re-download on every boot. A host
+      # directory pre-seeded with the image's own contents, chowned 1200:1200,
+      # keeps the bundled weights visible AND writable. Re-seed from the image
+      # on every digest bump; the HF_* override lines below stay OFF so the
+      # seeded set is the deployed set.
+      - $DOCKERDIR/appdata/hermes-hindsight/hfcache:/home/hindsight/.cache/huggingface
+      # Edited copies of the image's own /etc/passwd + /etc/group with the
+      # `hindsight` line remapped 1000 -> 1200. REQUIRED host ownership/mode:
+      # root:root 0644. If either is missing at `compose up`, Docker creates a
+      # DIRECTORY at that path and the container's getpwuid crashes. Source of
+      # truth: appdata-templates/hermes-hindsight/{passwd,group}.
+      - $DOCKERDIR/appdata/hermes-hindsight-etc/passwd:/etc/passwd:ro
+      - $DOCKERDIR/appdata/hermes-hindsight-etc/group:/etc/group:ro
+    networks:
+      hermes_net:
+        ipv4_address: 192.168.92.11

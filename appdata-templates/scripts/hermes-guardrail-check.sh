@@ -56,7 +56,7 @@ extract() {
 	/usr/bin/awk '
 		# A new top-level key (column 0, ends in ":") switches section tracking.
 		/^[A-Za-z_][A-Za-z0-9_]*:/ {
-			insec = ($0 ~ /^(approvals|security|skills|tool_loop_guardrails|terminal|dashboard|mcp_servers):/)
+            insec = ($0 ~ /^(approvals|security|skills|tool_loop_guardrails|terminal|dashboard|mcp_servers|web):/)
 		}
 		insec {
 			line = $0

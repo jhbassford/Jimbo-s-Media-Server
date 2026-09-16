@@ -151,6 +151,90 @@ callow "unattended denies" sh -c 'hermes config get approvals.unattended_mode | 
 callow "cron denies"       sh -c 'hermes config get approvals.cron_mode | grep -q "^deny$"'
 callow "no scheduled mail" sh -c '! hermes cron list 2>/dev/null | grep -qiE "gmail|mail|inbox|brief"'
 
+echo "== private SearXNG search peer (2026-09-14) =="
+# Search-only peer on hermes_search. Hermes can reach it directly (NO_PROXY);
+# the reverse direction is firewalled; it has no published ports and sits on no
+# other network. Valkey/limiter deliberately absent: Hermes caps searches itself.
+callow "searxng search answers" sh -c 'curl -s --max-time 10 "http://192.168.96.2:8080/search?q=test&format=json" | grep -q "\"results\""'
+cdeny  "searxng has no published port" sh -c 'curl -s --max-time 5 http://192.168.1.104:8080/search?q=test\&format=json | grep -q "\"results\""'
+callow "searxng only on hermes_search" sh -c 'curl -s --max-time 8 http://192.168.93.2:2375/containers/hermes-searxng/json 2>/dev/null | grep -q "hermes_search"'
+cdeny  "searxng not on t3_proxy"       sh -c 'curl -s --max-time 8 http://192.168.93.2:2375/containers/hermes-searxng/json 2>/dev/null | grep -q "t3_proxy"'
+cdeny  "searxng not on hermes_net"     sh -c 'curl -s --max-time 8 http://192.168.93.2:2375/containers/hermes-searxng/json 2>/dev/null | grep -q "hermes_net"'
+callow "search backend is searxng"     sh -c 'hermes config get web.search_backend 2>/dev/null | grep -q "^searxng$"'
+
+echo "== private web extractor (2026-09-14) =="
+# Second peer on hermes_search. Unlike SearXNG, which queries two FIXED engines,
+# this one fetches arbitrary URLs -- so it is SSRF-as-a-service unless contained,
+# and the SSRF checks below are the point of this whole section, not garnish.
+#
+# The agent-side gate does not cover it: tools/url_safety.py:283 returns True
+# when DNS fails and a proxy is configured, and the agent's DNS is deliberately
+# blocked, so every HOSTNAME is waved through and only literal private IPs are
+# stopped. Measured: is_safe_url("http://localtest.me/") -> True (-> 127.0.0.1).
+#
+# NOT TESTABLE FROM IN HERE: the firewall leg. The shim refuses private targets
+# before a packet leaves, so there is no way to exercise the DROP rules through
+# its API -- by design. Verify that leg from the HOST, after any firewall edit:
+#   sudo iptables -S HERMES-CONTAIN | grep -- '-s 192.168.96.3/32 .* -j DROP'
+#   sudo /usr/local/bin/docker run --rm --network container:hermes-extract \
+#        curlimages/curl:8.8.0 -s --max-time 5 http://192.168.1.104:5000/   # must fail
+callow "extract backend is tavily"     sh -c 'hermes config get web.extract_backend 2>/dev/null | grep -q "^tavily$"'
+callow "no cloud extract fallback"     sh -c 'hermes config get web.keyless_rescue 2>/dev/null | grep -qi "^false$"'
+callow "extractor is the local shim"   sh -c 'echo "$TAVILY_BASE_URL" | grep -q "^http://192.168.96.3:8080$"'
+callow "extractor extracts a real page" sh -c 'curl -s --max-time 7 -X POST http://192.168.96.3:8080/extract \
+  -H "Content-Type: application/json" -d "{\"urls\":[\"https://example.com/\"]}" \
+  | grep -q "Example Domain"'
+# PDF support (2026-09-14). Not a containment property -- an ALLOW check, for the
+# reason given at the top of this file: vendor specs and standards are PDFs, and
+# silently losing this sends the agent on multi-minute detours through
+# web.archive.org looking for an HTML mirror.
+#
+# The target is THIS NAS's own datasheet, deliberately: it is the document whose
+# refusal motivated adding pypdf, and it exercises the octet-stream path (that
+# CDN mislabels its PDFs). Two earlier candidates were rejected on evidence --
+# w3.org's dummy.pdf answers 403 to this user-agent, and rfc-editor's pdfrfc
+# path is a 404 -- so if this check ever fails, CURL THE URL BY HAND FIRST: an
+# upstream move looks identical to a regression from in here.
+callow "extractor reads a PDF"          sh -c 'curl -s --max-time 7 -X POST http://192.168.96.3:8080/extract   -H "Content-Type: application/json" -d "{\"urls\":[\"https://global.download.synology.com/download/Document/Hardware/DataSheet/DiskStation/20-year/DS920+/enu/Synology_DS920_Plus_Data_Sheet_enu.pdf\"]}"   | grep -q "\"raw_content\": \"."'
+# ...but the content-type gate still holds: non-documents are refused outright.
+cdeny  "extractor refuses an image"     sh -c 'curl -s --max-time 7 -X POST http://192.168.96.3:8080/extract   -H "Content-Type: application/json" -d "{\"urls\":[\"https://www.python.org/static/img/python-logo.png\"]}"   | grep -q "\"raw_content\": \"."'
+# THE SSRF CHECKS. A pass means the returned JSON carries NO non-empty
+# raw_content, i.e. the fetch was refused rather than served.
+cdeny  "extractor refuses literal LAN IP" sh -c 'curl -s --max-time 7 -X POST http://192.168.96.3:8080/extract \
+  -H "Content-Type: application/json" -d "{\"urls\":[\"http://192.168.1.104:5000/\"]}" \
+  | grep -q "\"raw_content\": \"."'
+cdeny  "extractor refuses rebinding host" sh -c 'curl -s --max-time 7 -X POST http://192.168.96.3:8080/extract \
+  -H "Content-Type: application/json" -d "{\"urls\":[\"http://localtest.me/\"]}" \
+  | grep -q "\"raw_content\": \"."'
+cdeny  "extractor refuses file:// scheme"  sh -c 'curl -s --max-time 7 -X POST http://192.168.96.3:8080/extract \
+  -H "Content-Type: application/json" -d "{\"urls\":[\"file:///etc/passwd\"]}" \
+  | grep -q "\"raw_content\": \"."'
+callow "extractor only on hermes_search"  sh -c 'curl -s --max-time 8 http://192.168.93.2:2375/containers/hermes-extract/json 2>/dev/null | grep -q "hermes_search"'
+cdeny  "extractor not on t3_proxy"        sh -c 'curl -s --max-time 8 http://192.168.93.2:2375/containers/hermes-extract/json 2>/dev/null | grep -q "t3_proxy"'
+cdeny  "extractor not on hermes_net"      sh -c 'curl -s --max-time 8 http://192.168.93.2:2375/containers/hermes-extract/json 2>/dev/null | grep -q "hermes_net"'
+cdeny  "extractor not on hermes_socket"   sh -c 'curl -s --max-time 8 http://192.168.93.2:2375/containers/hermes-extract/json 2>/dev/null | grep -q "hermes_socket"'
+cdeny  "extractor publishes no host port" sh -c 'curl -s --max-time 8 http://192.168.93.2:2375/containers/hermes-extract/json 2>/dev/null | grep -q "HostPort"'
+# It holds no credentials and must not gain any: nothing to steal is the design.
+cdeny  "extractor holds no secrets in env" sh -c 'curl -s --max-time 8 http://192.168.93.2:2375/containers/hermes-extract/json 2>/dev/null | grep -qiE "API_KEY|TOKEN|PASSWORD|SECRET"'
+cdeny  "extractor cannot restart itself"   sh -c 'curl -s -o /dev/null -w "%{http_code}" --max-time 8 -X POST http://192.168.93.2:2375/containers/hermes-extract/restart | grep -qE "^(200|204)$"'
+
+echo "== PocketSmith MCP (spec 2026-09-11) =="
+# Unlike Google, the PocketSmith MCP is vendor-hosted and reached DIRECTLY by
+# Hermes, so this suite asserts reachability and a valid token rather than an
+# isolated-container boundary.
+callow "pocketsmith reachable via proxy" sh -c 'curl -s -o /dev/null --max-time 10 -x http://192.168.92.2:8888 https://mcp.pocketsmith.com/.well-known/oauth-protected-resource'
+callow "pocketsmith MCP connected"       sh -c 'hermes mcp test pocketsmith 2>/dev/null | grep -qi "connected"'
+# Full access is a deliberate operator choice (spec section 1). Assert a
+# representative writer is present so a silent downgrade to the read-only
+# endpoint cannot pass as healthy.
+callow "full-access writer present"      sh -c 'hermes mcp test pocketsmith 2>/dev/null | grep -qE "update_transaction|create_event"'
+# DELIBERATE DELTA (spec 5.2): the OAuth token DOES live in the agent-writable
+# mount here, unlike Google. Assert it is exactly the expected file rather than
+# leaving it to a loose glob, and keep asserting no Google-shaped credential.
+callow "pocketsmith token at expected path" sh -c 'test -f /opt/data/mcp-tokens/pocketsmith.json'
+cdeny  "no google token in /opt/data"    sh -c 'find /opt/data -maxdepth 3 -type f \( -iname "*google*.json" -o -iname "*client_secret*" \) 2>/dev/null | grep -q .'
+callow "no scheduled finances"           sh -c '! hermes cron list 2>/dev/null | grep -qiE "pocketsmith|budget|financ|transaction"'
+
 echo
 echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ] && echo "CONTAINED: spec section 5 criterion holds." \
