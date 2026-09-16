@@ -31,6 +31,7 @@ back into an advisory one, with no error anywhere. Copy the file, then run the
 | `hermes-egress/filter` | `/volume1/docker/appdata/hermes-egress/filter` | `root:root` | `0644` |
 | `hermes-searxng/settings.yml` | `/volume1/docker/appdata/hermes-searxng/settings.yml` | `root:root` | `0644` |
 | `scripts/hermes-firewall.sh` | `/volume1/docker/scripts/hermes-firewall.sh` | `root:root` | `0750` |
+| `scripts/ha-install-midea-ac-lan.sh` | `/volume1/docker/scripts/ha-install-midea-ac-lan.sh` | `root:root` | `0750` |
 | `hermes-hindsight/passwd` | `/volume1/docker/appdata/hermes-hindsight-etc/passwd` | `root:root` | `0644` |
 | `hermes-hindsight/group` | `/volume1/docker/appdata/hermes-hindsight-etc/group` | `root:root` | `0644` |
 | `hermes-hindsight/hindsight.env` | `/volume1/docker/appdata/hermes-hindsight/hindsight.env` | `root:root` | `0600` |
@@ -113,6 +114,12 @@ ssh nas 'KEY=$(/usr/bin/openssl rand -hex 32) && sudo /bin/sed -i "s/REPLACE_WIT
 ssh nas 'sudo mkdir -p /volume1/docker/scripts'
 ssh nas 'cat > /tmp/hermes-firewall.sh' < appdata-templates/scripts/hermes-firewall.sh
 ssh nas 'sudo install -o root -g root -m 0750 /tmp/hermes-firewall.sh /volume1/docker/scripts/hermes-firewall.sh && rm -f /tmp/hermes-firewall.sh'
+
+# the Home Assistant custom-integration installer. Only this script is delivered
+# here: it fetches and checksum-verifies its own payload at run time, so the
+# component itself is never copied into this directory.
+ssh nas 'cat > /tmp/ha-install-midea-ac-lan.sh' < appdata-templates/scripts/ha-install-midea-ac-lan.sh
+ssh nas 'sudo install -o root -g root -m 0750 /tmp/ha-install-midea-ac-lan.sh /volume1/docker/scripts/ha-install-midea-ac-lan.sh && rm -f /tmp/ha-install-midea-ac-lan.sh'
 
 # Hindsight memory server: passwd/group remap (uid 1200, not the image's 1000),
 # its separate OpenRouter key, and the pg0 data volume.
@@ -506,6 +513,45 @@ non-obvious properties of this host's iptables, including that built-in chains
 cannot be addressed by name here. Needs **two** DSM Task Scheduler entries
 (Boot-up, and daily repeating every 1 hour), both as root: a Docker package
 restart or a `compose down/up` rebuilds the chains without a reboot.
+
+### `scripts/ha-install-midea-ac-lan.sh`
+Reinstalls the "Midea AC LAN" Home Assistant custom integration into
+`/volume1/docker/appdata/homeassistant/custom_components/midea_ac_lan`. Needs
+`root` (it chowns the result) and is safe to re-run: an existing install is
+first moved aside to `custom_components.bak/midea_ac_lan-<timestamp>`. The
+backup deliberately does **not** sit next to the live install — HA resolves the
+manifest `domain` of every non-dot entry in `custom_components/`, so a sibling
+backup is discovered as a second copy of `midea_ac_lan` and silently wins or
+loses by `readdir` order. Measured 2026-09-16: a `.bak-` sibling made the
+loader log the integration twice.
+
+The *integration* is version- and checksum-pinned inside the script — version,
+release URL, and GitHub's own published `sha256` for the asset. There is no
+partial install: a checksum mismatch aborts before anything is moved. Bump the
+pin deliberately (the header records how), and note the fork: the integration
+most guides link to, `georgezhao2010/midea_ac_lan`, is abandoned (last release
+2023-10-16). The live one is `wuwentao/midea_ac_lan`, which is the repository
+HACS itself ships under the "Midea AC LAN" name.
+
+**It does not configure the appliance.** Retrieving the Token/Key needs the
+operator's Midea cloud account, so that stays a UI step. Deployment specifics
+established 2026-09-16:
+
+- HA is `network_mode: host` at `192.168.1.104`; the AC is on the IoT VLAN at
+  `192.168.2.237`. Inter-VLAN routing works — a TCP connect to the appliance's
+  `:6444` succeeds and `ping` answers in one hop via the UDM — but **UDP
+  broadcast discovery cannot cross the VLAN**. Auto-discovery therefore finds
+  nothing, which reads as "device unsupported". Enter the IP directly instead.
+- Only personal *Meiju* / *SmartHome* accounts can fetch tokens. The AU app is
+  MSmartHome, i.e. the `SmartHome` cloud. An account *migrated* from another app
+  can never retrieve tokens; a fresh account with the appliance re-bound is the
+  fix. (`NetHome Plus` cannot retrieve tokens at all.)
+- Only the TCP control path is guaranteed across the VLAN. If remote-initiated
+  state changes lag, lower the integration's refresh interval (default 30s) —
+  the device's own LAN notifications may not survive the VLAN hop.
+- Midea is progressively closing the token API. Once added, copy the appliance's
+  generated `.json` out of HA: for a v3-protocol device it is the only way to
+  re-add the appliance if that service ends.
 
 ## Verifying delivery
 
